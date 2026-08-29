@@ -366,8 +366,10 @@ async def resolve_video(url: str, platform: str) -> ResolvedMedia:
     maximum = _config_int("VideoDurationMaximum")
     if duration > maximum:
         raise ValueError(f"视频时长 {duration} 秒，超过管理员设置的最长时长 {maximum} 秒")
-    await _extract_info(url, platform, True)
-    file_path = _downloaded_file(info)
+    downloaded_info = _first_entry(await _extract_info(url, platform, True))
+    file_path = _downloaded_file(downloaded_info) if downloaded_info is not None else None
+    if file_path is None:
+        file_path = _downloaded_file(info)
     if file_path is None:
         raise ValueError("视频下载完成后未找到本地文件")
     thumbnail = _string(info.get("thumbnail"))
@@ -727,8 +729,24 @@ async def _resolve_acfun(url: str) -> ResolvedMedia:
     if marker not in response.text:
         raise ValueError("AcFun 页面未返回视频信息")
     payload_text = response.text.split(marker, 1)[1].split("</script>", 1)[0].strip().rstrip(";")
-    escaped_payload = payload_text.replace('\\\\"', '\\"').replace('\\"', '"')
-    payload = _json_object(json.loads(escaped_payload))
+    payload: dict[str, object] | None = None
+    candidates = [payload_text]
+    try:
+        decoded_payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        decoded_payload = None
+    if isinstance(decoded_payload, str):
+        candidates.append(decoded_payload)
+    candidates.append(payload_text.replace('\\\\"', '\\"').replace('\\"', '"'))
+    for candidate in candidates:
+        try:
+            payload = _json_object(json.loads(candidate))
+        except json.JSONDecodeError:
+            continue
+        if payload is not None:
+            break
+    if payload is None:
+        raise ValueError("AcFun 页面 JSON 格式无效")
     current = _json_object(payload.get("currentVideoInfo")) if payload is not None else None
     play_json = _string(current.get("ksPlayJson")) if current is not None else None
     if play_json is None:
@@ -835,6 +853,7 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
             jump = _json_object(data.get("jx")) if data is not None else None
             if jump is not None and _string(jump.get("type")) == "图集":
                 item = _json_object(data.get("item")) if data is not None else None
+                author = _json_object(data.get("author")) if data is not None else None
                 image_values = item.get("images") if item is not None else None
                 images = (
                     tuple(image for image in image_values if isinstance(image, str))
@@ -850,6 +869,9 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
                         "image",
                         url,
                         image_urls=((cover,) if cover else ()) + images,
+                        author_sec_uid=_string(author["sec_uid"])
+                        if author is not None and "sec_uid" in author
+                        else None,
                     )
         video_match = re.search(r"/(?:video|note)/(\d+)", final_url)
         cookie = _config_str("DouyinCookie")

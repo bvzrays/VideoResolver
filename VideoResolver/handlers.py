@@ -19,8 +19,9 @@ from .resolver import (
     download_audio,
     extract_url,
     fetch_bilibili_comments,
-    format_comment_text,
+    format_comment_message,
     platform_from_url,
+    reload_comment_templates,
     render_comments,
     resolve_special_page,
 )
@@ -130,31 +131,33 @@ async def _send_media(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
 
 
 async def _send_comments(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
-    if _scope_id(ev) in await _load_json_list(_COMMENTS_DISABLED_PATH):
-        return
-    comments = await fetch_bilibili_comments(media)
-    if not comments:
-        return
-    raw_modes = (
-        json.loads(await asyncio.to_thread(_COMMENT_MODE_PATH.read_text, encoding="utf-8"))
-        if _COMMENT_MODE_PATH.is_file()
-        else {}
-    )
-    modes = raw_modes if isinstance(raw_modes, dict) else {}
-    configured_mode = gsconfig.get_config("CommentMode").data
-    if not isinstance(configured_mode, str):
-        raise TypeError("CommentMode must be str")
-    mode = modes.get(_scope_id(ev), configured_mode)
-    if not isinstance(mode, str):
-        mode = configured_mode
-    if mode == "image":
-        try:
-            await bot.send(MessageSegment.image(await render_comments(media, comments)))
+    try:
+        if _scope_id(ev) in await _load_json_list(_COMMENTS_DISABLED_PATH):
             return
-        except Exception as error:
-            logger.warning(f"VideoResolver comment image fallback: {error}")
-    text = format_comment_text(comments)
-    await bot.send(MessageSegment.node([MessageSegment.text(text)]))
+        comments = await fetch_bilibili_comments(media)
+        if not comments:
+            return
+        raw_modes = (
+            json.loads(await asyncio.to_thread(_COMMENT_MODE_PATH.read_text, encoding="utf-8"))
+            if _COMMENT_MODE_PATH.is_file()
+            else {}
+        )
+        modes = raw_modes if isinstance(raw_modes, dict) else {}
+        configured_mode = gsconfig.get_config("CommentMode").data
+        if not isinstance(configured_mode, str):
+            raise TypeError("CommentMode must be str")
+        mode = modes.get(_scope_id(ev), configured_mode)
+        if not isinstance(mode, str):
+            mode = configured_mode
+        if mode == "image":
+            try:
+                await bot.send(MessageSegment.image(await render_comments(media, comments)))
+                return
+            except Exception as error:
+                logger.debug(f"VideoResolver comment image fallback: {error}")
+        await bot.send(format_comment_message(media, comments))
+    except Exception as error:
+        logger.debug(f"VideoResolver comment branch skipped: {error}")
 
 
 async def _handle_link(bot: Bot, ev: Event) -> None:
@@ -257,7 +260,8 @@ async def switch_comment_mode(bot: Bot, ev: Event) -> None:
 
 @sv_owner_control.on_fullmatch("重载评论模板")
 async def reload_comment_template(bot: Bot, ev: Event) -> None:
-    await bot.send("✅ VideoResolver 评论模板使用内置模板，无需手动重载")
+    reload_comment_templates()
+    await bot.send("✅ VideoResolver 评论模板已重载")
 
 
 register_help(

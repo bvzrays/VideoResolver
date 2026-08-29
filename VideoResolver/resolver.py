@@ -16,11 +16,13 @@ import aiofiles
 import httpx
 
 from gsuid_core.logger import logger
+from gsuid_core.models import Message
 from gsuid_core.pool import to_thread
+from gsuid_core.segment import MessageSegment
 from gsuid_core.utils.html_render import render_html_to_bytes
 
 from .config import gsconfig
-from .utils.resource.RESOURCE_PATH import ASSET_PATH, COOKIE_PATH, DOWNLOAD_PATH
+from .utils.resource.RESOURCE_PATH import ASSET_PATH, COOKIE_PATH, DOWNLOAD_PATH, TEMPLATES_PATH
 
 MediaKind = Literal["video", "image", "audio", "file"]
 
@@ -50,6 +52,7 @@ class ResolvedMedia:
     file_name: str | None = None
     cid: int | None = None
     up_mid: int | None = None
+    author_sec_uid: str | None = None
     page_index: int = 0
     ai_summary: str = ""
 
@@ -70,6 +73,7 @@ class ResolvedComment:
     replies: tuple["ResolvedComment", ...] = ()
     emojis: tuple[str, ...] = ()
     emote_map: tuple[tuple[str, str], ...] = ()
+    mentions: tuple[str, ...] = ()
 
 
 def _config_str(name: str) -> str:
@@ -105,7 +109,7 @@ def extract_url(raw_text: str) -> str | None:
     match = re.search(r"https?://[^\s<>]+", normalized)
     if match is None:
         return None
-    return match.group(0).rstrip("，。！？；,.;!?)】》")
+    return match.group(0).rstrip("，。！？；,.;!?)】》").rstrip("\"'")
 
 
 def platform_from_url(url: str) -> str | None:
@@ -154,6 +158,8 @@ def _number(value: object) -> int | None:
         return value
     if isinstance(value, float):
         return int(value)
+    if isinstance(value, str) and re.fullmatch(r"-?\d+", value.strip()):
+        return int(value.strip())
     return None
 
 
@@ -775,18 +781,21 @@ def _mid_to_id(mid: str) -> str:
 
 async def _resolve_weibo(url: str) -> ResolvedMedia:
     parsed = urlparse(url)
-    id_match = re.search(r"/detail/([A-Za-z0-9]+)", parsed.path)
-    if id_match is None:
-        id_match = re.search(r"/(\d+)/([A-Za-z0-9]+)", parsed.path)
-    if id_match is None:
-        id_match = re.search(r"(?:^|[?&])mid=([A-Za-z0-9]+)", parsed.query)
-    if id_match is None and "/tv/show/" in parsed.path:
+    weibo_id: str | None = None
+    if "/tv/show/" in parsed.path:
         mid = parse_qs(parsed.query).get("mid", [""])[0]
         if mid:
-            id_match = re.match(r"(.+)", _mid_to_id(mid))
-    if id_match is None:
+            weibo_id = _mid_to_id(mid)
+    if weibo_id is None:
+        id_match = re.search(r"/detail/([A-Za-z0-9]+)", parsed.path)
+        if id_match is None:
+            id_match = re.search(r"/(\d+)/([A-Za-z0-9]+)", parsed.path)
+        if id_match is None:
+            id_match = re.search(r"(?:^|[?&])mid=([A-Za-z0-9]+)", parsed.query)
+        if id_match is not None:
+            weibo_id = id_match.group(2) if id_match.lastindex == 2 else id_match.group(1)
+    if weibo_id is None:
         raise ValueError("微博链接中没有动态 ID")
-    weibo_id = id_match.group(2) if id_match.lastindex == 2 else id_match.group(1)
     async with httpx.AsyncClient(timeout=20, follow_redirects=True, proxy=configured_proxy()) as client:
         response = await client.get(f"https://m.weibo.cn/statuses/show?id={weibo_id}")
     payload = _json_object(json.loads(response.text))
@@ -888,6 +897,8 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
             payload = _json_object(json.loads(response.text))
             detail = _json_object(payload.get("aweme_detail")) if payload is not None else None
             if detail is not None:
+                author = _json_object(detail["author"]) if "author" in detail else None
+                author_sec_uid = _string(author["sec_uid"]) if author is not None and "sec_uid" in author else None
                 aweme_type = _number(detail.get("aweme_type"))
                 raw_images = detail.get("images")
                 image_urls: list[str] = []
@@ -908,6 +919,7 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
                             "image",
                             final_url,
                             image_urls=tuple(dict.fromkeys(image_urls)),
+                            author_sec_uid=author_sec_uid,
                         )
             video = _json_object(detail.get("video")) if detail is not None else None
             play_addr = _json_object(video.get("play_addr")) if video is not None else None
@@ -920,6 +932,7 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
                     title or "抖音视频",
                     "dy",
                     source_url=final_url,
+                    author_sec_uid=author_sec_uid,
                 )
     return await resolve_video(final_url, "dy")
 
@@ -1005,6 +1018,7 @@ async def _download_direct_video(
     title: str,
     platform: str = "xiaohongshu",
     source_url: str | None = None,
+    author_sec_uid: str | None = None,
 ) -> ResolvedMedia:
     path = DOWNLOAD_PATH / f"direct_{int(time.time() * 1000000)}.mp4"
     async with httpx.AsyncClient(timeout=90, follow_redirects=True, proxy=configured_proxy()) as client:
@@ -1019,6 +1033,7 @@ async def _download_direct_video(
         "video",
         source_url or url,
         media_path=path,
+        author_sec_uid=author_sec_uid,
     )
 
 
@@ -1210,7 +1225,25 @@ async def fetch_douyin_comments(media: ResolvedMedia) -> list[ResolvedComment]:
             return None
         return next((item for item in data["url_list"] if isinstance(item, str) and item), None)
 
-    def parse_douyin_comment(value: object) -> ResolvedComment | None:
+    def extract_mentions(comment: dict[str, object], text: str) -> tuple[str, ...]:
+        raw_extra = comment["text_extra"] if "text_extra" in comment else None
+        if not isinstance(raw_extra, list):
+            return ()
+        mentions: list[str] = []
+        for raw_item in raw_extra:
+            item = _json_object(raw_item)
+            if item is None:
+                continue
+            start = _number(item["start"]) if "start" in item else None
+            end = _number(item["end"]) if "end" in item else None
+            if start is None or end is None or start < 0 or end <= start or end > len(text):
+                continue
+            mention = text[start:end]
+            if mention.startswith("@") and mention not in mentions:
+                mentions.append(mention)
+        return tuple(mentions)
+
+    def parse_douyin_comment(value: object, target_author: str | None) -> ResolvedComment | None:
         comment = _json_object(value)
         if comment is None:
             return None
@@ -1219,6 +1252,7 @@ async def fetch_douyin_comments(media: ResolvedMedia) -> list[ResolvedComment]:
         text = _string(comment["text"]) if "text" in comment else None
         if username is None or text is None:
             return None
+        user_sec_uid = _string(user["sec_uid"]) if user is not None and "sec_uid" in user else None
         avatar_data = user["avatar_thumb"] if user is not None and "avatar_thumb" in user else None
         avatar = url_from_object(avatar_data)
         images: list[str] = []
@@ -1241,11 +1275,14 @@ async def fetch_douyin_comments(media: ResolvedMedia) -> list[ResolvedComment]:
             if sticker_data is not None and "animate_url" in sticker_data
             else None
         )
+        location = _string(comment["ip_label"]) if "ip_label" in comment else None
+        if location is None and "ip_location" in comment:
+            location = _string(comment["ip_location"])
         replies: list[ResolvedComment] = []
         raw_replies = comment["reply_comment"] if "reply_comment" in comment else None
         if isinstance(raw_replies, list):
             for raw_reply in raw_replies[:3]:
-                parsed_reply = parse_douyin_comment(raw_reply)
+                parsed_reply = parse_douyin_comment(raw_reply, target_author)
                 if parsed_reply is not None:
                     replies.append(parsed_reply)
         return ResolvedComment(
@@ -1256,17 +1293,51 @@ async def fetch_douyin_comments(media: ResolvedMedia) -> list[ResolvedComment]:
             image=images[0] if images else None,
             images=tuple(images),
             sticker=sticker,
-            location=_string(comment["ip_label"]) or "" if "ip_label" in comment else "",
+            location=location or "",
             time=_format_comment_time(_number(comment["create_time"]) if "create_time" in comment else None),
+            is_author=user_sec_uid is not None and target_author is not None and user_sec_uid == target_author,
             replies=tuple(replies),
+            mentions=extract_mentions(comment, text),
         )
 
     comments: list[ResolvedComment] = []
     for raw_comment in raw_comments:
-        parsed_comment = parse_douyin_comment(raw_comment)
+        parsed_comment = parse_douyin_comment(raw_comment, media.author_sec_uid)
         if parsed_comment is not None:
             comments.append(parsed_comment)
     return comments
+
+
+_COMMENT_TEMPLATE_CACHE: dict[str, str] = {}
+_COMMENT_TEMPLATE_MARKERS = ("{{theme_class}}", "{{title}}", "{{total_comments}}", "{{comments}}")
+
+
+def _comment_template_name(platform: str) -> str:
+    return "bilibili-comment.html" if platform == "bilibili" else "douyin-comment.html"
+
+
+def load_comment_template(platform: str, force_reload: bool = False) -> str:
+    template_name = _comment_template_name(platform)
+    if not force_reload and template_name in _COMMENT_TEMPLATE_CACHE:
+        return _COMMENT_TEMPLATE_CACHE[template_name]
+    builtin_path = Path(__file__).resolve().parent / "templates" / template_name
+    runtime_path = TEMPLATES_PATH / template_name
+    builtin_template = builtin_path.read_text(encoding="utf-8")
+    if runtime_path.is_file() and runtime_path.stat().st_size > 0:
+        template = runtime_path.read_text(encoding="utf-8")
+        if not all(marker in template for marker in _COMMENT_TEMPLATE_MARKERS):
+            template = builtin_template
+            runtime_path.write_text(template, encoding="utf-8")
+    else:
+        template = builtin_template
+        runtime_path.write_text(template, encoding="utf-8")
+    _COMMENT_TEMPLATE_CACHE[template_name] = template
+    return template
+
+
+def reload_comment_templates() -> None:
+    load_comment_template("dy", force_reload=True)
+    load_comment_template("bilibili", force_reload=True)
 
 
 async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment]) -> bytes:
@@ -1280,8 +1351,9 @@ async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment])
 
     for comment in comments:
         collect_assets(comment)
-    asset_results = await asyncio.gather(*(_inline_asset(url) for url in sorted(asset_urls)))
-    assets = {url: result for url, result in zip(sorted(asset_urls), asset_results) if result is not None}
+    sorted_assets = sorted(asset_urls)
+    asset_results = await asyncio.gather(*(_inline_asset(url) for url in sorted_assets))
+    assets = {url: result for url, result in zip(sorted_assets, asset_results) if result is not None}
 
     def image_tag(class_name: str, url: str | None) -> str:
         if url is None or url not in assets:
@@ -1293,19 +1365,27 @@ async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment])
         for placeholder, url in comment.emote_map:
             if url in assets:
                 content = content.replace(html.escape(placeholder), image_tag("comment-emoji-inline", url))
+        for mention in comment.mentions:
+            escaped_mention = html.escape(mention)
+            content = content.replace(
+                escaped_mention,
+                f'<span class="comment-mention">{escaped_mention}</span>',
+            )
         return content
 
     def render_reply(reply: ResolvedComment) -> str:
         reply_images = "".join(image_tag("comment-image", image) for image in reply.images)
-        reply_emojis = "".join(image_tag("comment-emoji", emoji) for emoji in reply.emojis)
         badge = ' <span class="author-badge">UP</span>' if reply.is_author else ""
+        reply_sticker = image_tag("comment-sticker", reply.sticker)
+        reply_emojis = "".join(image_tag("comment-emoji", emoji) for emoji in reply.emojis)
+        reply_media = reply_images + reply_sticker + reply_emojis
         return (
             '<div class="reply-item">'
             f"{image_tag('reply-avatar', reply.avatar)}"
             '<div class="reply-body">'
             f'<div class="reply-username">{html.escape(reply.username)}{badge}</div>'
             f'<div class="reply-text">{text_html(reply)}</div>'
-            f'<div class="reply-media">{reply_images}{reply_emojis}</div>'
+            f'<div class="reply-media">{reply_media}</div>'
             f'<div class="reply-footer">{html.escape(reply.time)}　🤍 {reply.like}</div>'
             "</div></div>"
         )
@@ -1315,8 +1395,12 @@ async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment])
         images = "".join(image_tag("comment-image", image) for image in comment.images)
         if not images and comment.image is not None:
             images = image_tag("comment-image", comment.image)
-        sticker = image_tag("sticker", comment.sticker)
-        emojis = "".join(image_tag("comment-emoji", emoji) for emoji in comment.emojis)
+        sticker = image_tag("comment-sticker", comment.sticker)
+        emojis = (
+            ""
+            if media.platform == "bilibili"
+            else "".join(image_tag("comment-emoji", emoji) for emoji in comment.emojis)
+        )
         replies = "".join(render_reply(reply) for reply in comment.replies)
         replies_html = f'<div class="replies">{replies}</div>' if replies else ""
         badge = ' <span class="author-badge">UP</span>' if comment.is_author else ""
@@ -1332,27 +1416,25 @@ async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment])
             f"{replies_html}</section></article>"
         )
     items = "".join(item_parts)
-    document = f"""<!doctype html><html><head><meta charset="utf-8"><style>
-body{{margin:0;padding:28px;background:#f6f7fb;color:#20242b;font-family:Arial,sans-serif;width:720px}}
-h1{{font-size:24px;margin:0 0 22px}}article{{display:flex;gap:12px;background:#fff;border-radius:12px;padding:14px 18px;
-margin:12px 0}}
-section{{flex:1;min-width:0}}.avatar{{width:42px;height:42px;border-radius:50%;object-fit:cover}}
-.username,.reply-username{{font-weight:700;color:#3d4652}}.author-badge{{color:#ff2c55;font-size:12px}}
-p{{font-size:16px;line-height:1.6;margin:8px 0;overflow-wrap:anywhere}}small{{color:#8a93a3}}
-.media,.reply-media{{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}}.comment-image{{max-width:240px;max-height:240px;object-fit:contain;border-radius:8px}}
-.sticker{{max-width:120px;max-height:120px;object-fit:contain}}.comment-emoji{{width:32px;height:32px;object-fit:contain}}
-.comment-emoji-inline{{width:22px;height:22px;vertical-align:middle;margin:0 3px;display:inline-block}}
-.replies{{margin-top:12px;background:#f1f3f6;border-radius:8px;padding:10px}}
-.reply-item{{display:flex;gap:8px;margin:8px 0}}
-.reply-avatar{{width:26px;height:26px;border-radius:50%;object-fit:cover}}.reply-body{{flex:1;min-width:0}}
-.reply-text{{font-size:14px;line-height:1.5;overflow-wrap:anywhere}}.reply-footer{{font-size:11px;color:#8a93a3;margin-top:4px}}
-</style></head><body><h1>💬《{html.escape(media.title)}》热门评论（{len(comments)}条）</h1>{items}</body></html>"""
+    template = load_comment_template(media.platform)
+    theme_class = "" if media.platform == "bilibili" else "dark"
+    document = (
+        template.replace("{{theme_class}}", theme_class)
+        .replace("{{title}}", html.escape(media.title))
+        .replace("{{total_comments}}", str(len(comments)))
+        .replace("{{comments}}", items)
+        .replace("{{page_indicator}}", "")
+    )
     return await render_html_to_bytes(document, max_width=780, image_format="png", lang="zh")
 
 
 async def _inline_asset(url: str) -> str | None:
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True, proxy=configured_proxy()) as client:
-        response = await client.get(url)
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True, proxy=configured_proxy()) as client:
+            response = await client.get(url)
+    except (httpx.HTTPError, OSError) as error:
+        logger.debug("VideoResolver 评论资源下载失败：%s", error)
+        return None
     if response.status_code >= 400 or not response.content:
         return None
     mime = response.headers.get("content-type", "image/jpeg").split(";", 1)[0]
@@ -1370,3 +1452,26 @@ def format_comment_text(comments: list[ResolvedComment]) -> str:
             reply_author = " [UP]" if reply.is_author else ""
             lines.append(f"   ↳ {reply.username}{reply_author}：{reply.text}（♥ {reply.like}）")
     return "\n".join(lines)
+
+
+def format_comment_message(media: ResolvedMedia, comments: list[ResolvedComment]) -> Message:
+    content: list[Message] = [MessageSegment.text(f"💬《{media.title}》热门评论")]
+    for index, comment in enumerate(comments, 1):
+        meta = " | ".join(value for value in (comment.time, comment.location) if value)
+        suffix = f"（{meta}）" if meta else ""
+        author = " [UP]" if comment.is_author else ""
+        text = f"{index}. {comment.username}{author}：{comment.text}（♥ {comment.like}）{suffix}"
+        media_messages: list[Message] = [MessageSegment.text(text)]
+        media_messages.extend(MessageSegment.image(url) for url in comment.images)
+        if comment.sticker is not None:
+            media_messages.append(MessageSegment.image(comment.sticker))
+        media_messages.extend(MessageSegment.image(url) for url in comment.emojis)
+        content.extend(media_messages)
+        for reply in comment.replies:
+            reply_author = " [UP]" if reply.is_author else ""
+            content.append(MessageSegment.text(f"   ↳ {reply.username}{reply_author}：{reply.text}（♥ {reply.like}）"))
+            content.extend(MessageSegment.image(url) for url in reply.images)
+            if reply.sticker is not None:
+                content.append(MessageSegment.image(reply.sticker))
+            content.extend(MessageSegment.image(url) for url in reply.emojis)
+    return MessageSegment.node(content)

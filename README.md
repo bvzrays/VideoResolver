@@ -41,7 +41,7 @@ Windows 请安装 FFmpeg，并确认在 PowerShell 中执行 `ffmpeg -version` �
 | `vr关闭评论` | 群管理员 | 关闭当前群评论区处理 |
 | `vr切换评论模式` | 群管理员 | 在 HTML 图片和文字合并转发间切换 |
 | `vr查看关闭解析` | 主人 | 查看已关闭解析的会话 |
-| `vr重载评论模板` | 主人 | 确认使用内置评论模板 |
+| `vr重载评论模板` | 主人 | 重载评论模板；首次运行会复制内置模板 |
 
 ## 配置
 
@@ -63,6 +63,12 @@ Windows 请安装 FFmpeg，并确认在 PowerShell 中执行 `ffmpeg -version` �
 | 评论数量 | `20` | 单次最多读取数量 |
 
 Cookie 和 Cookie 文件只保存在 GsCore 的 `data/VideoResolver/` 运行目录，不要提交到 Git。
+
+评论图片模板也位于 `data/VideoResolver/templates/`：`douyin-comment.html` 用于抖音，
+`bilibili-comment.html` 用于 B 站。可以复制并修改模板中的 HTML/CSS，保留
+`{{theme_class}}`、`{{title}}`、`{{total_comments}}` 和 `{{comments}}` 占位符；如模板使用分页，
+还可以保留可选的 `{{page_indicator}}` 占位符，
+然后发送 `vr重载评论模板` 应用修改；模板缺失或损坏时会自动恢复内置版本。
 
 ## 说明
 

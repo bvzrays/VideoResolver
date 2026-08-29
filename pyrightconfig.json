@@ -1,0 +1,8 @@
+{
+  "include": ["VideoResolver"],
+  "exclude": [".venv", "__pycache__"],
+  "typeCheckingMode": "basic",
+  "extraPaths": ["../../../"],
+  "venvPath": "../../../",
+  "venv": ".venv"
+}

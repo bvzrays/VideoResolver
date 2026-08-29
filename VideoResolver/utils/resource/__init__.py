@@ -1,0 +1,1 @@
+"""VideoResolver resource paths."""

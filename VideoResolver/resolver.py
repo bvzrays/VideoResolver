@@ -815,49 +815,107 @@ async def _resolve_bilibili_dynamic(url: str, dynamic_id: str) -> ResolvedMedia:
     title = _string(basic.get("title")) if basic is not None else None
     text_parts: list[str] = []
     image_urls: list[str] = []
+    author = ""
+    author_avatar: str | None = None
+    published_at = ""
     modules = item.get("modules")
-    if isinstance(modules, list):
-        for raw_module in modules:
-            module = _json_object(raw_module)
-            content = _json_object(module.get("module_content")) if module is not None else None
-            paragraphs = content.get("paragraphs") if content is not None else None
-            if not isinstance(paragraphs, list):
+    module_values = modules if isinstance(modules, list) else [modules] if isinstance(modules, dict) else []
+    for raw_module in module_values:
+        module = _json_object(raw_module)
+        if module is None:
+            continue
+        module_author = _json_object(module.get("module_author"))
+        if module_author is not None:
+            author = _string(module_author.get("name")) or author
+            author_avatar = _string(module_author.get("face")) or author_avatar
+            if not published_at:
+                published_at = _format_publish_time(_number(module_author.get("pub_ts")))
+
+        module_dynamic = _json_object(module.get("module_dynamic"))
+        dynamic_desc = _json_object(module_dynamic.get("desc")) if module_dynamic is not None else None
+        desc_text = _string(dynamic_desc.get("text")) if dynamic_desc is not None else None
+        if desc_text:
+            text_parts.append(desc_text)
+        major = _json_object(module_dynamic.get("major")) if module_dynamic is not None else None
+        if major is not None:
+            article = _json_object(major.get("article"))
+            if article is not None:
+                title = _string(article.get("title")) or title
+                article_desc = _string(article.get("desc"))
+                if article_desc:
+                    text_parts.append(article_desc)
+                covers = article.get("covers")
+                if isinstance(covers, list):
+                    image_urls.extend(cover for cover in covers if isinstance(cover, str) and cover)
+            draw = _json_object(major.get("draw"))
+            draw_items = draw.get("items") if draw is not None else None
+            if isinstance(draw_items, list):
+                image_urls.extend(
+                    image_url
+                    for raw_picture in draw_items
+                    if (picture := _json_object(raw_picture)) is not None
+                    if (image_url := _first_string(picture, ("src", "url"))) is not None
+                )
+            opus = _json_object(major.get("opus"))
+            opus_pictures = opus.get("pics") if opus is not None else None
+            if isinstance(opus_pictures, list):
+                image_urls.extend(
+                    image_url
+                    for raw_picture in opus_pictures
+                    if (picture := _json_object(raw_picture)) is not None
+                    if (image_url := _first_string(picture, ("url", "src"))) is not None
+                )
+            for major_name in ("archive", "common", "pgc", "live"):
+                major_data = _json_object(major.get(major_name))
+                if major_data is not None and (cover := _first_string(major_data, ("cover", "cover_url"))):
+                    image_urls.append(cover)
+
+        content = _json_object(module.get("module_content"))
+        paragraphs = content.get("paragraphs") if content is not None else None
+        if not isinstance(paragraphs, list):
+            continue
+        for raw_paragraph in paragraphs:
+            paragraph = _json_object(raw_paragraph)
+            if paragraph is None:
                 continue
-            for raw_paragraph in paragraphs:
-                paragraph = _json_object(raw_paragraph)
-                if paragraph is None:
-                    continue
-                text_data = _json_object(paragraph.get("text"))
-                nodes = text_data.get("nodes") if text_data is not None else None
-                if isinstance(nodes, list):
-                    for raw_node in nodes:
-                        node = _json_object(raw_node)
-                        if node is None:
-                            continue
-                        word_data = _json_object(node.get("word"))
-                        if word_data is None:
-                            continue
-                        words = _string(word_data.get("words"))
-                        if words:
-                            text_parts.append(words)
-                pictures = _json_object(paragraph.get("pic"))
-                raw_pictures = pictures.get("pics") if pictures is not None else None
-                if isinstance(raw_pictures, list):
-                    image_urls.extend(
-                        image_url
-                        for raw_picture in raw_pictures
-                        if (picture := _json_object(raw_picture)) is not None
-                        if (image_url := _string(picture.get("url"))) is not None
-                    )
+            text_data = _json_object(paragraph.get("text"))
+            nodes = text_data.get("nodes") if text_data is not None else None
+            paragraph_text: list[str] = []
+            if isinstance(nodes, list):
+                for raw_node in nodes:
+                    node = _json_object(raw_node)
+                    if node is None:
+                        continue
+                    word_data = _json_object(node.get("word"))
+                    if word_data is None:
+                        continue
+                    words = _string(word_data.get("words"))
+                    if words:
+                        paragraph_text.append(words)
+            if paragraph_text:
+                text_parts.append("".join(paragraph_text))
+            pictures = _json_object(paragraph.get("pic"))
+            raw_pictures = pictures.get("pics") if pictures is not None else None
+            if isinstance(raw_pictures, list):
+                image_urls.extend(
+                    image_url
+                    for raw_picture in raw_pictures
+                    if (picture := _json_object(raw_picture)) is not None
+                    if (image_url := _string(picture.get("url"))) is not None
+                )
     if not image_urls:
         raise ValueError("B站动态没有可发送的图片")
+    description = "\n".join(dict.fromkeys(part.strip() for part in text_parts if part.strip()))
     return ResolvedMedia(
         "bilibili",
         title or "B站动态",
         "image",
         url,
         image_urls=tuple(dict.fromkeys(image_urls)),
-        description="".join(text_parts),
+        description=description,
+        author=author,
+        author_avatar=author_avatar,
+        published_at=published_at,
     )
 
 
@@ -1076,14 +1134,19 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
                         else None,
                     )
         video_match = re.search(r"/(?:video|note)/(\d+)", final_url)
+        final_query = parse_qs(urlparse(final_url).query)
+        modal_id = final_query.get("modal_id", [""])[0]
+        aweme_id = video_match.group(1) if video_match is not None else modal_id
+        if re.fullmatch(r"\d+", aweme_id) is None:
+            aweme_id = ""
         cookie = _config_str("DouyinCookie")
-        if video_match is not None and cookie:
+        if aweme_id and cookie:
             user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123 Safari/537.36"
             params = {
                 "device_platform": "webapp",
                 "aid": "6383",
                 "channel": "channel_pc_web",
-                "aweme_id": video_match.group(1),
+                "aweme_id": aweme_id,
                 "pc_client_type": "1",
                 "version_code": "190500",
                 "version_name": "19.5.0",
@@ -1140,7 +1203,13 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
                             continue
                         url_values = image_data.get("url_list") or image_data.get("download_url_list")
                         if isinstance(url_values, list):
-                            image_urls.extend(item for item in url_values if isinstance(item, str) and item)
+                            valid_urls = [item for item in url_values if isinstance(item, str) and item]
+                            if valid_urls:
+                                jpeg_url = next(
+                                    (item for item in valid_urls if re.search(r"\.jpe?g(?:\?|$)", item, re.IGNORECASE)),
+                                    None,
+                                )
+                                image_urls.append(jpeg_url or valid_urls[0])
                 if aweme_type in {2, 68} or image_urls:
                     title = _string(detail.get("desc"))
                     if image_urls:
@@ -1177,25 +1246,147 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
 
 
 async def _resolve_x(url: str) -> ResolvedMedia:
-    api_url = f"http://47.99.158.118/video-crack/v2/parse?content={quote(url, safe='')}"
+    status_match = re.search(r"/([^/]+)/status/(\d+)", urlparse(url).path, re.IGNORECASE)
+    if status_match is None:
+        raise ValueError("X 链接中没有动态 ID")
+    username, status_id = status_match.groups()
     async with httpx.AsyncClient(timeout=20, follow_redirects=True, proxy=configured_proxy()) as client:
-        response = await client.get(api_url, headers={"User-Agent": "Mozilla/5.0"})
-        payload = _json_object(json.loads(response.text))
-        data = _json_object(payload["data"]) if payload is not None and "data" in payload else None
-        if data is None:
-            fallback = await client.get(f"{api_url}/photo/1", headers={"User-Agent": "Mozilla/5.0"})
-            fallback_payload = _json_object(json.loads(fallback.text))
-            data = (
-                _json_object(fallback_payload["data"])
-                if fallback_payload is not None and "data" in fallback_payload
-                else None
+        headers = {"User-Agent": "Mozilla/5.0"}
+        try:
+            response = await client.get(
+                f"https://api.fxtwitter.com/{username}/status/{status_id}",
+                headers=headers,
             )
+            response.raise_for_status()
+            payload = _json_object(json.loads(response.text))
+        except (httpx.HTTPError, json.JSONDecodeError):
+            payload = None
+        tweet = _json_object(payload["tweet"]) if payload is not None and "tweet" in payload else None
+        if tweet is not None:
+            media = _json_object(tweet.get("media"))
+            raw_media = media.get("all") if media is not None else None
+            images: list[str] = []
+            video_url: str | None = None
+            thumbnail: str | None = None
+            if isinstance(raw_media, list):
+                for raw_item in raw_media:
+                    media_item = _json_object(raw_item)
+                    if media_item is None:
+                        continue
+                    media_type = (_string(media_item.get("type")) or "").lower()
+                    media_url = _string(media_item.get("url"))
+                    if media_url is None:
+                        continue
+                    if media_type in {"photo", "image"}:
+                        images.append(media_url)
+                    elif media_type in {"video", "gif"} and video_url is None:
+                        video_url = media_url
+                        thumbnail = _string(media_item.get("thumbnail_url"))
+            author_data = _json_object(tweet.get("author"))
+            title = _string(tweet.get("text")) or "X 动态"
+            media_result = await _build_x_media(
+                source_url=url,
+                title=title,
+                images=tuple(dict.fromkeys(images)),
+                video_url=video_url,
+                thumbnail=thumbnail,
+                author=_first_string(author_data, ("name", "screen_name")) or "" if author_data is not None else "",
+                author_avatar=_string(author_data.get("avatar_url")) if author_data is not None else None,
+                published_at=_format_publish_time(_number(tweet.get("created_timestamp"))),
+            )
+            if media_result is not None:
+                return media_result
+
+        try:
+            response = await client.get(
+                f"https://api.vxtwitter.com/{username}/status/{status_id}",
+                headers=headers,
+            )
+            response.raise_for_status()
+            payload = _json_object(json.loads(response.text))
+        except (httpx.HTTPError, json.JSONDecodeError):
+            payload = None
+        if payload is not None:
+            raw_media = payload.get("media_extended")
+            images = []
+            video_url = None
+            thumbnail = None
+            if isinstance(raw_media, list):
+                for raw_item in raw_media:
+                    media_item = _json_object(raw_item)
+                    if media_item is None:
+                        continue
+                    media_type = (_string(media_item.get("type")) or "").lower()
+                    media_url = _string(media_item.get("url"))
+                    if media_url is None:
+                        continue
+                    if media_type in {"photo", "image"}:
+                        images.append(media_url)
+                    elif media_type in {"video", "gif"} and video_url is None:
+                        video_url = media_url
+                        thumbnail = _string(media_item.get("thumbnail_url"))
+            media_result = await _build_x_media(
+                source_url=url,
+                title=_string(payload.get("text")) or "X 动态",
+                images=tuple(dict.fromkeys(images)),
+                video_url=video_url,
+                thumbnail=thumbnail,
+                author=_first_string(payload, ("user_name", "user_screen_name")) or "",
+                author_avatar=_string(payload.get("user_profile_image_url")),
+                published_at=_format_publish_time(_number(payload.get("date_epoch"))),
+            )
+            if media_result is not None:
+                return media_result
+
+        api_url = f"http://47.99.158.118/video-crack/v2/parse?content={quote(url, safe='')}"
+        try:
+            response = await client.get(api_url, headers=headers)
+            response.raise_for_status()
+            payload = _json_object(json.loads(response.text))
+        except (httpx.HTTPError, json.JSONDecodeError):
+            payload = None
+        data = _json_object(payload["data"]) if payload is not None and "data" in payload else None
     media_url = _string(data.get("url")) if data is not None else None
     if media_url is None:
-        raise ValueError("X 备用解析接口未返回媒体地址")
+        raise ValueError("X 主备解析接口均未返回媒体地址")
     if re.search(r"\.(?:jpg|jpeg|png|gif|webp)(?:\?|$)", media_url, re.IGNORECASE):
-        return ResolvedMedia("twitter", "X 动态媒体", "image", url, image_urls=(media_url,))
-    return await _download_direct_video(media_url, "X 动态媒体", "twitter")
+        return ResolvedMedia("twitter", "X 动态", "image", url, image_urls=(media_url,))
+    return await _download_direct_video(media_url, "X 动态", "twitter", source_url=url)
+
+
+async def _build_x_media(
+    source_url: str,
+    title: str,
+    images: tuple[str, ...],
+    video_url: str | None,
+    thumbnail: str | None,
+    author: str,
+    author_avatar: str | None,
+    published_at: str,
+) -> ResolvedMedia | None:
+    if video_url is not None:
+        return await _download_direct_video(
+            video_url,
+            title,
+            "twitter",
+            source_url=source_url,
+            author=author,
+            author_avatar=author_avatar,
+            published_at=published_at,
+            thumbnail=thumbnail,
+        )
+    if images:
+        return ResolvedMedia(
+            "twitter",
+            title,
+            "image",
+            source_url,
+            image_urls=images,
+            author=author,
+            author_avatar=author_avatar,
+            published_at=published_at,
+        )
+    return None
 
 
 async def _resolve_xiaohongshu(url: str, cookie: str) -> ResolvedMedia:
@@ -1398,6 +1589,32 @@ async def download_image(url: str, suffix: str = ".jpg") -> Path:
         response.raise_for_status()
         await asyncio.to_thread(path.write_bytes, response.content)
     return path
+
+
+async def download_images(urls: tuple[str, ...], referer: str = "") -> tuple[bytes, ...]:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if referer:
+        headers["Referer"] = referer
+    limits = httpx.Limits(max_connections=6, max_keepalive_connections=6)
+    async with httpx.AsyncClient(
+        timeout=30,
+        follow_redirects=True,
+        headers=headers,
+        limits=limits,
+        proxy=configured_proxy(),
+    ) as client:
+
+        async def fetch(url: str) -> bytes | None:
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+            except httpx.HTTPError as error:
+                logger.debug(f"VideoResolver 图集图片下载失败：{error}")
+                return None
+            return response.content or None
+
+        results = await asyncio.gather(*(fetch(url) for url in urls))
+    return tuple(result for result in results if result is not None)
 
 
 async def download_audio(url: str) -> Path:

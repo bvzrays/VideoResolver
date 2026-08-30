@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 from PIL import Image
@@ -17,6 +18,7 @@ from .config import gsconfig
 from .resolver import (
     ResolvedMedia,
     download_audio,
+    download_images,
     extract_url,
     fetch_bilibili_comments,
     format_comment_message,
@@ -36,6 +38,7 @@ _DISABLED_PATH = DATA_PATH / "disabled_scopes.json"
 _COMMENTS_DISABLED_PATH = DATA_PATH / "comments_disabled_scopes.json"
 _COMMENT_MODE_PATH = DATA_PATH / "comment_modes.json"
 _ICON_PATH = Path(__file__).resolve().parents[1] / "ICON.png"
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 _PLATFORM_SWITCHES = {
     "bilibili": "EnableBilibili",
     "dy": "EnableDouyin",
@@ -132,7 +135,16 @@ async def _send_media(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
         finally:
             await _remove_path(media.media_path)
     elif media.kind == "image":
-        await bot.send(MessageSegment.node([MessageSegment.image(url) for url in media.image_urls]))
+        image_data = await download_images(media.image_urls, media.source_url)
+        if not image_data:
+            raise ValueError("图集图片均下载失败")
+        image_messages = [MessageSegment.image(data) for data in image_data]
+        try:
+            await bot.send(MessageSegment.node(image_messages))
+        except Exception as error:
+            logger.debug(f"VideoResolver image gallery forward fallback: {error}")
+            for index in range(0, len(image_messages), 9):
+                await bot.send(image_messages[index : index + 9])
     elif media.kind == "audio" and media.media_url is not None:
         if media.image_urls:
             await bot.send(MessageSegment.node([MessageSegment.image(url) for url in media.image_urls]))
@@ -201,7 +213,8 @@ async def _handle_link(bot: Bot, ev: Event) -> None:
             await _send_comments(bot, ev, media)
     except Exception as error:
         logger.warning(f"VideoResolver {platform} resolve failed: {error}")
-        await bot.send(f"❌ {_platform_label(platform)}解析失败：{error}")
+        error_text = _ANSI_ESCAPE.sub("", str(error)).strip() or type(error).__name__
+        await bot.send(f"❌ {_platform_label(platform)}解析失败：{error_text}")
 
 
 @sv_resolver.on_regex(

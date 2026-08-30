@@ -1,1 +1,1 @@
-VideoResolver_version = "1.2.33"
+VideoResolver_version = "1.2.34"

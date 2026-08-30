@@ -13,6 +13,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.segment import MessageSegment
 from gsuid_core.sv import SV
+from gsuid_core.utils.plugins_update._plugins import is_reload, update_plugins
 
 from .config import gsconfig
 from .resolver import (
@@ -33,6 +34,7 @@ from .utils.resource.RESOURCE_PATH import DATA_PATH
 sv_resolver = SV("视频链接解析", priority=3)
 sv_control = SV("视频解析管理", pm=3)
 sv_owner_control = SV("视频解析主人管理", pm=1)
+sv_core_update_alias = SV("视频解析更新别名", pm=0, priority=1)
 
 _DISABLED_PATH = DATA_PATH / "disabled_scopes.json"
 _COMMENTS_DISABLED_PATH = DATA_PATH / "comments_disabled_scopes.json"
@@ -71,6 +73,13 @@ def _nickname() -> str:
     if not isinstance(value, str):
         raise TypeError("GlobalNickname must be str")
     return value.strip()
+
+
+def _media_card_enabled() -> bool:
+    value = gsconfig.get_config("EnableMediaCard").data
+    if not isinstance(value, bool):
+        raise TypeError("EnableMediaCard must be bool")
+    return value
 
 
 def _platform_label(platform: str) -> str:
@@ -120,11 +129,12 @@ async def _send_media(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
         details += f"\n简介：{media.description}"
     if media.extra_text:
         details += f"\n{media.extra_text}"
-    try:
-        await bot.send(MessageSegment.image(await render_media_card(media, nickname, label)))
-    except Exception as error:
-        logger.debug(f"VideoResolver media card fallback: {error}")
-        await bot.send(details)
+    if _media_card_enabled():
+        try:
+            await bot.send(MessageSegment.image(await render_media_card(media, nickname, label)))
+        except Exception as error:
+            logger.debug(f"VideoResolver media card fallback: {error}")
+            await bot.send(details)
     if media.kind == "video" and media.media_path is not None:
         try:
             file_size = (await asyncio.to_thread(media.media_path.stat)).st_size
@@ -302,6 +312,15 @@ async def reload_comment_template(bot: Bot, ev: Event) -> None:
     await bot.send("✅ VideoResolver 评论模板已重载")
 
 
+@sv_core_update_alias.on_fullmatch("core更新视频解析", block=True, prefix=False)
+async def update_video_resolver(bot: Bot, ev: Event) -> None:
+    await bot.send("🔔 正在尝试更新插件 VideoResolver，请稍等...")
+    update_log = await update_plugins("VideoResolver")
+    await bot.send(update_log)
+    if not is_reload:
+        await bot.send("可使用 core重载插件VideoResolver 重新加载插件")
+
+
 register_help(
     "VideoResolver",
     "vr帮助",
@@ -317,5 +336,6 @@ async def video_resolver_help(bot: Bot, ev: Event) -> None:
         "vr开启解析 / vr关闭解析\n"
         "vr开启评论 / vr关闭评论\n"
         "vr切换评论模式\n"
+        "主人更新：core更新视频解析\n"
         "支持：哔哩哔哩、抖音、TikTok、AcFun、X、微博、小红书、YouTube、网易云音乐、酷狗音乐"
     )

@@ -2,9 +2,12 @@ from gsuid_core.utils.plugins_config.models import (
     GSC,
     GsBoolConfig,
     GsDivider,
+    GsFileUploadConfig,
     GsIntConfig,
     GsStrConfig,
 )
+
+from .utils.resource.RESOURCE_PATH import COOKIE_PATH
 
 CONFIG_DEFAULT: dict[str, GSC] = {
     "Basic": GsDivider("基础配置", "解析器的通用行为和网络设置"),
@@ -12,6 +15,11 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         "解析前缀名",
         "发送解析结果前显示的自定义名称，可留空",
         "",
+    ),
+    "EnableMediaCard": GsBoolConfig(
+        "发送解析图",
+        "解析完成后发送包含作者、标题和媒体预览的信息卡；关闭不影响媒体、评论和总结",
+        True,
     ),
     "ResolverProxy": GsStrConfig(
         "网络代理",
@@ -45,31 +53,51 @@ CONFIG_DEFAULT: dict[str, GSC] = {
     "EnableYouTube": GsBoolConfig("启用 YouTube", "解析 YouTube 视频；默认关闭", False),
     "EnableNetease": GsBoolConfig("启用网易云音乐", "解析网易云音乐歌曲", True),
     "EnableKugou": GsBoolConfig("启用酷狗音乐", "解析酷狗音乐歌曲", True),
-    "Bilibili": GsDivider("哔哩哔哩配置", "用于动态、收藏夹和 AI 总结等需要登录态的功能"),
+    "CookieGuide": GsDivider(
+        "如何获取 Cookie",
+        (
+            "先在 Chrome 或 Edge 登录目标网站，再按 F12 打开开发者工具。B站在“应用/Application → Cookie”中"
+            "复制 SESSDATA 的值；抖音和小红书在“网络/Network → 刷新页面 → 选择同域请求 → 请求标头/"
+            "Request Headers”中复制完整 Cookie。原项目视频教程：https://github.com/user-attachments/assets/"
+            "7ead6d62-a36c-4e8d-bb5d-6666749dfb26。Cookie 等同账号凭据，请勿公开分享。"
+        ),
+    ),
+    "Bilibili": GsDivider("哔哩哔哩配置", "B站只需填写 SESSDATA 的值，不要包含 SESSDATA= 前缀"),
     "BiliSessdata": GsStrConfig(
         "B站 SESSDATA",
-        "可选；填写后启用 B站登录态功能和热门评论读取",
+        "登录 bilibili.com 后，在 F12 → 应用/Application → Cookie 中找到 SESSDATA，只粘贴该项的值",
         "",
         secret=True,
     ),
-    "Douyin": GsDivider("抖音配置", "抖音视频和图集解析所需的登录态"),
+    "Douyin": GsDivider("抖音配置", "抖音需要完整 Cookie，格式为 key=value; key2=value2"),
     "DouyinCookie": GsStrConfig(
         "抖音 Cookie",
-        "可选；抖音接口需要登录态时填写完整 Cookie",
+        "登录 douyin.com 后，在 F12 网络请求的 Request Headers 中复制 Cookie 后面的完整内容",
         "",
         secret=True,
     ),
-    "Xiaohongshu": GsDivider("小红书配置", "小红书笔记解析所需的登录态"),
+    "Xiaohongshu": GsDivider("小红书配置", "小红书需要完整 Cookie，格式为 key=value; key2=value2"),
     "XhsCookie": GsStrConfig(
         "小红书 Cookie",
-        "可选；小红书笔记解析通常需要填写完整 Cookie",
+        "登录 xiaohongshu.com 后，在 F12 网络请求的 Request Headers 中复制 Cookie 后面的完整内容",
         "",
         secret=True,
     ),
-    "YouTube": GsDivider("YouTube 配置", "YouTube 使用 yt-dlp，可选使用 Netscape Cookie 文件"),
+    "YouTube": GsDivider(
+        "YouTube 配置",
+        "导出 Netscape 格式 cookies.txt 后可直接上传；文件首行通常为 # Netscape HTTP Cookie File",
+    ),
+    "YoutubeCookieUpload": GsFileUploadConfig(
+        "上传 YouTube Cookie",
+        "上传 Netscape 格式 txt 文件，控制台会保存为 data/VideoResolver/cookies/ytb_cookies.txt",
+        "",
+        str(COOKIE_PATH),
+        "ytb_cookies",
+        "txt",
+    ),
     "YoutubeCookieFile": GsStrConfig(
-        "YouTube Cookie 文件",
-        "留空使用默认 cookies/ytb_cookies.txt；填写相对文件名或绝对路径",
+        "YouTube Cookie 自定义路径",
+        "高级选项；留空使用上方上传的文件，也可填写 cookies 目录内的相对文件名或绝对路径",
         "",
     ),
     "Comments": GsDivider("评论区配置", "解析视频后异步读取可用的热门评论"),

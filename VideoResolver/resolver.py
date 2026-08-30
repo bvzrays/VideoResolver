@@ -358,8 +358,10 @@ def _extract_info(url: str, platform: str, download: bool) -> object:
     elif platform == "bilibili":
         options["proxy"] = None
     cookie_file = _config_str("YoutubeCookieFile") if platform == "youtube" else ""
+    uploaded_cookie_file = _config_str("YoutubeCookieUpload") if platform == "youtube" else ""
     if platform == "youtube":
-        cookie_path = Path(cookie_file) if cookie_file else COOKIE_PATH / "ytb_cookies.txt"
+        configured_cookie_file = cookie_file or uploaded_cookie_file
+        cookie_path = Path(configured_cookie_file) if configured_cookie_file else COOKIE_PATH / "ytb_cookies.txt"
         if not cookie_path.is_absolute():
             cookie_path = COOKIE_PATH / cookie_path
         if cookie_path.is_file():

@@ -23,6 +23,7 @@ from .resolver import (
     platform_from_url,
     reload_comment_templates,
     render_comments,
+    render_media_card,
     resolve_special_page,
 )
 from .utils.resource.RESOURCE_PATH import DATA_PATH
@@ -35,6 +36,18 @@ _DISABLED_PATH = DATA_PATH / "disabled_scopes.json"
 _COMMENTS_DISABLED_PATH = DATA_PATH / "comments_disabled_scopes.json"
 _COMMENT_MODE_PATH = DATA_PATH / "comment_modes.json"
 _ICON_PATH = Path(__file__).resolve().parents[1] / "ICON.png"
+_PLATFORM_SWITCHES = {
+    "bilibili": "EnableBilibili",
+    "dy": "EnableDouyin",
+    "tiktok": "EnableTikTok",
+    "ac": "EnableAcFun",
+    "twitter": "EnableTwitter",
+    "wb": "EnableWeibo",
+    "xiaohongshu": "EnableXiaohongshu",
+    "youtube": "EnableYouTube",
+    "netease": "EnableNetease",
+    "kugou": "EnableKugou",
+}
 
 
 async def _load_json_list(path: Path) -> list[str]:
@@ -77,7 +90,14 @@ def _disabled_platforms() -> set[str]:
     raw = gsconfig.get_config("GlobalResolveController").data
     if not isinstance(raw, str):
         raise TypeError("GlobalResolveController must be str")
-    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+    disabled = {item.strip().lower() for item in raw.split(",") if item.strip()}
+    for platform, config_name in _PLATFORM_SWITCHES.items():
+        enabled = gsconfig.get_config(config_name).data
+        if not isinstance(enabled, bool):
+            raise TypeError(f"{config_name} must be bool")
+        if not enabled:
+            disabled.add(platform)
+    return disabled
 
 
 async def _save_json(path: Path, value: list[str] | dict[str, str]) -> None:
@@ -97,9 +117,11 @@ async def _send_media(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
         details += f"\n简介：{media.description}"
     if media.extra_text:
         details += f"\n{media.extra_text}"
-    await bot.send(details)
-    if media.kind == "video" and media.media_url:
-        await bot.send(MessageSegment.image(media.media_url))
+    try:
+        await bot.send(MessageSegment.image(await render_media_card(media, nickname, label)))
+    except Exception as error:
+        logger.debug(f"VideoResolver media card fallback: {error}")
+        await bot.send(details)
     if media.kind == "video" and media.media_path is not None:
         try:
             file_size = (await asyncio.to_thread(media.media_path.stat)).st_size
@@ -151,7 +173,8 @@ async def _send_comments(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
             mode = configured_mode
         if mode == "image":
             try:
-                await bot.send(MessageSegment.image(await render_comments(media, comments)))
+                pages = await render_comments(media, comments)
+                await bot.send(MessageSegment.node(list(pages)))
                 return
             except Exception as error:
                 logger.debug(f"VideoResolver comment image fallback: {error}")
@@ -170,6 +193,8 @@ async def _handle_link(bot: Bot, ev: Event) -> None:
     if platform is None or platform in _disabled_platforms() or _scope_id(ev) in await _load_json_list(_DISABLED_PATH):
         return
     try:
+        if platform == "youtube":
+            await bot.send("⏳ YouTube 正在解析，请稍候…")
         media = await resolve_special_page(url, platform)
         await _send_media(bot, ev, media)
         if media.kind == "video" or (media.platform == "dy" and media.kind == "image"):
@@ -183,7 +208,7 @@ async def _handle_link(bot: Bot, ev: Event) -> None:
     r"https?://(?:[^\s/]+\.)?(?:bilibili\.com|b23\.tv|bili2233\.cn|douyin\.com|v\.douyin\.com|"
     r"iesdouyin\.com|tiktok\.com|vt\.tiktok\.com|vm\.tiktok\.com|acfun\.cn|x\.com|twitter\.com|"
     r"xiaohongshu\.com|xhslink\.com|youtube\.com|youtu\.be|music\.163\.com|163cn\.tv|kugou\.com|"
-    r"weibo\.com|m\.weibo\.cn)[^\s<>]+|\bBV[0-9A-Za-z]{10}\b",
+    r"weibo\.com|weibo\.cn)[^\s<>]+|\bBV[0-9A-Za-z]{10}\b",
     prefix=False,
     block=True,
 )

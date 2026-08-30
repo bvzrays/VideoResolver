@@ -32,7 +32,7 @@
         .comment-body { flex: 1; min-width: 0; }
         .username, .reply-username { display: inline-flex; align-items: center; gap: 6px; color: var(--username-color); font-weight: 600; }
         .username { margin-bottom: 4px; }
-        .badge-author { background: #ff2c55; color: #fff; font-size: 11px; font-weight: bold; padding: 2px 6px; border-radius: 4px; }
+        .author-badge { background: #ff2c55; color: #fff; font-size: 11px; font-weight: bold; padding: 2px 6px; border-radius: 4px; }
         .comment-text { margin-bottom: 8px; color: var(--text-color); font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
         .comment-mention { color: #ff2c55; font-weight: 600; }
         .comment-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
@@ -46,6 +46,7 @@
         .reply-body { flex: 1; min-width: 0; }
         .reply-username { color: var(--reply-user-color); font-size: 13px; }
         .reply-text { color: var(--reply-text-color); font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+        .reply-media { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
         .reply-footer { display: flex; gap: 8px; margin-top: 4px; color: var(--meta-color); font-size: 11px; }
     </style>
 </head>
@@ -53,7 +54,7 @@
     <div class="container">
         <div class="header">
             <span class="title">💬 《{{title}}》热门评论</span>
-            <span style="font-size: 14px; color: var(--meta-color);">共 {{total_comments}} 条</span>
+            <span style="font-size: 14px; color: var(--meta-color);">共 {{total_comments}} 条{{page_indicator}}</span>
         </div>
         <div class="comments-list">{{comments}}</div>
     </div>

@@ -34,6 +34,30 @@ _ACFUN_HEADERS = {
     ),
 }
 
+_WEIBO_HEADERS = {
+    "Accept": "application/json,text/plain,*/*",
+    "Referer": "https://m.weibo.cn/",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    ),
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+_KUGOU_HEADERS = {
+    "Referer": "https://www.kugou.com/",
+    "User-Agent": "Mozilla/5.0",
+}
+
+_CHAT_VIDEO_FORMAT = (
+    "bv[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/"
+    "b[vcodec^=avc1][acodec^=mp4a][height<=720]/"
+    "bv[vcodec^=avc1][height<=720]+ba/"
+    "b[vcodec^=avc1][height<=720]/"
+    "b[ext=mp4][height<=720]/b[height<=720]/b"
+)
+_COMMENT_PAGE_SIZE = 5
+
 
 @dataclass(frozen=True)
 class ResolvedMedia:
@@ -55,6 +79,9 @@ class ResolvedMedia:
     author_sec_uid: str | None = None
     page_index: int = 0
     ai_summary: str = ""
+    author: str = ""
+    author_avatar: str | None = None
+    published_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -106,7 +133,7 @@ def configured_proxy() -> str | None:
 
 def extract_url(raw_text: str) -> str | None:
     normalized = raw_text.replace("\\/", "/").replace("\\u002F", "/").replace("&amp;", "&")
-    match = re.search(r"https?://[^\s<>]+", normalized)
+    match = re.search(r"https?://[^\s<>，。！？；：、（）【】《》“”‘’]+", normalized)
     if match is None:
         return None
     return match.group(0).rstrip("，。！？；,.;!?)】》").rstrip("\"'")
@@ -135,7 +162,7 @@ def platform_from_url(url: str) -> str | None:
         "163cn.tv": "netease",
         "kugou.com": "kugou",
         "weibo.com": "wb",
-        "m.weibo.cn": "wb",
+        "weibo.cn": "wb",
     }
     for domain, platform in platform_hosts.items():
         if host == domain or host.endswith(f".{domain}"):
@@ -163,6 +190,30 @@ def _number(value: object) -> int | None:
     return None
 
 
+def _format_publish_time(timestamp: int | None) -> str:
+    if timestamp is None or timestamp <= 0:
+        return ""
+    if timestamp > 10_000_000_000:
+        timestamp //= 1000
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+
+
+def _first_string(data: dict[str, object], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        if key in data and (value := _string(data[key])) is not None:
+            return value
+    return None
+
+
+def _url_from_object(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    data = _json_object(value)
+    if data is None or "url_list" not in data or not isinstance(data["url_list"], list):
+        return None
+    return next((item for item in data["url_list"] if isinstance(item, str) and item), None)
+
+
 async def _fetch_bilibili_view(url: str) -> dict[str, object] | None:
     """读取 B 站视频详情，为分P、统计和 AI 总结提供统一元数据。"""
     parsed = urlparse(url)
@@ -170,7 +221,8 @@ async def _fetch_bilibili_view(url: str) -> dict[str, object] | None:
     aid_match = re.search(r"(?:^|/)av(\d+)(?:/|$)", parsed.path, re.IGNORECASE)
     params: dict[str, str] = {}
     if bvid_match is not None:
-        params["bvid"] = bvid_match.group(1).upper()
+        bvid = bvid_match.group(1)
+        params["bvid"] = f"BV{bvid[2:]}"
     elif aid_match is not None:
         params["aid"] = aid_match.group(1)
     else:
@@ -290,13 +342,21 @@ def _extract_info(url: str, platform: str, download: bool) -> object:
     options = yt_dlp.YoutubeDL().params
     options["quiet"] = True
     options["no_warnings"] = True
+    options["noprogress"] = True
     options["noplaylist"] = True
     options["restrictfilenames"] = True
     options["outtmpl"] = str(DOWNLOAD_PATH / f"{int(time.time() * 1000)}_%(id)s.%(ext)s")
     options["merge_output_format"] = "mp4"
+    options["format"] = _CHAT_VIDEO_FORMAT
+    options["socket_timeout"] = 20
+    options["retries"] = 2
+    options["fragment_retries"] = 2
+    options["extractor_retries"] = 2
     proxy = configured_proxy()
-    if proxy is not None:
+    if proxy is not None and platform != "bilibili":
         options["proxy"] = proxy
+    elif platform == "bilibili":
+        options["proxy"] = None
     cookie_file = _config_str("YoutubeCookieFile") if platform == "youtube" else ""
     if platform == "youtube":
         cookie_path = Path(cookie_file) if cookie_file else COOKIE_PATH / "ytb_cookies.txt"
@@ -304,11 +364,15 @@ def _extract_info(url: str, platform: str, download: bool) -> object:
             cookie_path = COOKIE_PATH / cookie_path
         if cookie_path.is_file():
             options["cookiefile"] = str(cookie_path)
-        options["format"] = "bv*[height<=720]+ba/b[height<=720]/b"
     if platform == "bilibili":
         sessdata = _config_str("BiliSessdata")
+        bilibili_headers = {
+            "Referer": "https://www.bilibili.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
         if sessdata:
-            options["http_headers"] = {"Cookie": f"SESSDATA={sessdata}"}
+            bilibili_headers["Cookie"] = f"SESSDATA={sessdata}"
+        options["http_headers"] = bilibili_headers
     elif platform == "dy":
         cookie = _config_str("DouyinCookie")
         if cookie:
@@ -357,8 +421,11 @@ def _downloaded_file(info: dict[str, object]) -> Path | None:
     return candidates[0] if candidates else None
 
 
-async def resolve_video(url: str, platform: str) -> ResolvedMedia:
-    info = _first_entry(await _extract_info(url, platform, False))
+async def resolve_video(url: str, platform: str, prechecked_duration: int | None = None) -> ResolvedMedia:
+    downloaded_info = (
+        _first_entry(await _extract_info(url, platform, True)) if prechecked_duration is not None else None
+    )
+    info = downloaded_info or _first_entry(await _extract_info(url, platform, False))
     if info is None:
         raise ValueError("解析器未返回媒体信息")
     title = _string(info.get("title")) or "未命名视频"
@@ -366,13 +433,20 @@ async def resolve_video(url: str, platform: str) -> ResolvedMedia:
     maximum = _config_int("VideoDurationMaximum")
     if duration > maximum:
         raise ValueError(f"视频时长 {duration} 秒，超过管理员设置的最长时长 {maximum} 秒")
-    downloaded_info = _first_entry(await _extract_info(url, platform, True))
+    if downloaded_info is None:
+        downloaded_info = _first_entry(await _extract_info(url, platform, True))
     file_path = _downloaded_file(downloaded_info) if downloaded_info is not None else None
     if file_path is None:
         file_path = _downloaded_file(info)
     if file_path is None:
         raise ValueError("视频下载完成后未找到本地文件")
     thumbnail = _string(info.get("thumbnail"))
+    author = _first_string(info, ("uploader", "channel", "creator", "artist")) or ""
+    published_at = _format_publish_time(
+        _number(info["timestamp"])
+        if "timestamp" in info
+        else (_number(info["release_timestamp"]) if "release_timestamp" in info else None)
+    )
     return ResolvedMedia(
         platform=platform,
         title=title,
@@ -382,6 +456,9 @@ async def resolve_video(url: str, platform: str) -> ResolvedMedia:
         media_url=thumbnail,
         duration=duration,
         bvid=_string(info.get("id")) if platform == "bilibili" else None,
+        description=_string(info["description"]) or "" if "description" in info else "",
+        author=author,
+        published_at=published_at,
     )
 
 
@@ -399,7 +476,18 @@ async def resolve_image_page(url: str, platform: str) -> ResolvedMedia:
             thumbnails.append(values)
     if not thumbnails:
         raise ValueError("未找到可发送的图片")
-    return ResolvedMedia(platform, title, "image", url, image_urls=tuple(dict.fromkeys(thumbnails)))
+    author = _first_string(info, ("uploader", "channel", "creator", "artist")) or ""
+    published_at = _format_publish_time(_number(info["timestamp"]) if "timestamp" in info else None)
+    return ResolvedMedia(
+        platform,
+        title,
+        "image",
+        url,
+        image_urls=tuple(dict.fromkeys(thumbnails)),
+        description=_string(info["description"]) or "" if "description" in info else "",
+        author=author,
+        published_at=published_at,
+    )
 
 
 async def _resolve_special_music(url: str, platform: str) -> ResolvedMedia:
@@ -408,7 +496,12 @@ async def _resolve_special_music(url: str, platform: str) -> ResolvedMedia:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, proxy=configured_proxy()) as client:
             response = await client.get(url)
         url = str(response.url)
-    match = re.search(r"(?:[?&]id=|/song/|/hash/)([A-Za-z0-9]+)", url)
+    music_pattern = (
+        r"(?:[?&#](?:hash|id)=|/(?:song|hash)/)([A-Za-z0-9]+)"
+        if platform == "kugou"
+        else r"(?:[?&]id=|/song/)([A-Za-z0-9]+)"
+    )
+    match = re.search(music_pattern, url, re.IGNORECASE)
     music_id = match.group(1) if match is not None else ""
     if platform == "kugou" and not music_id:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True, proxy=configured_proxy()) as client:
@@ -417,6 +510,28 @@ async def _resolve_special_music(url: str, platform: str) -> ResolvedMedia:
         music_id = title_match.group(1).strip() if title_match is not None else ""
     if not music_id:
         raise ValueError("未能从音乐链接中找到歌曲标识")
+    if platform == "kugou" and re.fullmatch(r"[0-9A-Fa-f]{32}", music_id) is None:
+        async with httpx.AsyncClient(
+            timeout=20,
+            follow_redirects=True,
+            headers=_KUGOU_HEADERS,
+            proxy=configured_proxy(),
+        ) as client:
+            search_response = await client.get(
+                "https://songsearch.kugou.com/song_search_v2",
+                params={"keyword": music_id, "page": "1", "pagesize": "1", "platform": "WebFilter"},
+            )
+        search_response.raise_for_status()
+        search_payload = _json_object(json.loads(search_response.text))
+        search_data = (
+            _json_object(search_payload["data"]) if search_payload is not None and "data" in search_payload else None
+        )
+        search_items = search_data["lists"] if search_data is not None and "lists" in search_data else None
+        first_item = _json_object(search_items[0]) if isinstance(search_items, list) and search_items else None
+        music_hash = _string(first_item["FileHash"]) if first_item is not None and "FileHash" in first_item else None
+        if music_hash is None:
+            raise ValueError("酷狗官方搜索没有返回歌曲 Hash")
+        music_id = music_hash
     if platform == "netease":
         api_requests = (
             (
@@ -431,13 +546,22 @@ async def _resolve_special_music(url: str, platform: str) -> ResolvedMedia:
     else:
         api_requests = (
             (
-                "https://www.hhlqilongzhu.cn/api/dg_kugouSQ.php",
-                {"msg": music_id, "n": "1", "type": "json"},
+                "https://m.kugou.com/app/i/getSongInfo.php",
+                {"cmd": "playInfo", "hash": music_id},
             ),
         )
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True, proxy=configured_proxy()) as client:
+    headers = _KUGOU_HEADERS if platform == "kugou" else None
+    async with httpx.AsyncClient(
+        timeout=20,
+        follow_redirects=True,
+        headers=headers,
+        proxy=configured_proxy(),
+    ) as client:
         for api_url, params in api_requests:
-            response = await client.get(api_url, params=params)
+            try:
+                response = await client.get(api_url, params=params)
+            except httpx.HTTPError:
+                continue
             if response.status_code >= 400:
                 continue
             payload = _json_object(json.loads(response.text))
@@ -450,12 +574,31 @@ async def _resolve_special_music(url: str, platform: str) -> ResolvedMedia:
                 else (_json_object(data_value[0]) if data_value else None)
             )
             data = data or payload
-            media_url = next((_string(data.get(key)) for key in ("url", "music_url") if _string(data.get(key))), None)
+            media_url = next(
+                (_string(data.get(key)) for key in ("url", "music_url", "play_url") if _string(data.get(key))),
+                None,
+            )
             if media_url is None:
                 continue
-            title = _string(data.get("name")) or _string(data.get("title")) or f"歌曲_{music_id}"
-            cover = _string(data.get("pic")) or _string(data.get("picurl")) or _string(data.get("cover"))
-            singer = _string(data.get("singer")) or _string(data.get("ar_name"))
+            title = (
+                _string(data.get("name"))
+                or _string(data.get("title"))
+                or _string(data.get("songName"))
+                or f"歌曲_{music_id}"
+            )
+            cover = (
+                _string(data.get("pic"))
+                or _string(data.get("picurl"))
+                or _string(data.get("cover"))
+                or _string(data.get("imgUrl"))
+                or _string(data.get("album_img"))
+            )
+            singer = (
+                _string(data.get("singer"))
+                or _string(data.get("ar_name"))
+                or _string(data.get("singerName"))
+                or _string(data.get("author_name"))
+            )
             if singer is None:
                 singers = data.get("singers")
                 if isinstance(singers, list):
@@ -475,6 +618,7 @@ async def _resolve_special_music(url: str, platform: str) -> ResolvedMedia:
                 media_url=media_url,
                 image_urls=(cover,) if cover else (),
                 extra_text=f"歌手：{singer}" if singer else "",
+                author=singer or "",
             )
     raise ValueError("音乐主备解析接口均未返回播放链接")
 
@@ -513,6 +657,8 @@ async def _resolve_bilibili_page(url: str) -> ResolvedMedia:
     if parsed.path.startswith("/opus/") and dynamic_match is not None:
         return await _resolve_bilibili_dynamic(final_url, dynamic_match.group(1))
     live_match = re.search(r"/live/(\d+)", parsed.path)
+    if parsed.netloc.lower().endswith("live.bilibili.com"):
+        live_match = re.search(r"^/(\d+)(?:/|$)", parsed.path)
     if live_match is not None:
         return await _resolve_bilibili_live(final_url, live_match.group(1))
     article_match = re.search(r"/read/cv(\d+)", parsed.path)
@@ -532,7 +678,7 @@ async def _resolve_bilibili_page(url: str) -> ResolvedMedia:
     if selected_duration is not None and selected_duration > maximum_duration:
         raise ValueError(f"视频时长 {selected_duration} 秒，超过管理员设置的最长时长 {maximum_duration} 秒")
 
-    media = await resolve_video(final_url, "bilibili")
+    media = await resolve_video(final_url, "bilibili", selected_duration)
     if view_data is None:
         return media
     bvid = _string(view_data["bvid"]) if "bvid" in view_data else media.bvid
@@ -551,6 +697,9 @@ async def _resolve_bilibili_page(url: str) -> ResolvedMedia:
         description=_string(view_data["desc"]) or "" if "desc" in view_data else media.description,
         media_url=_string(view_data["pic"]) or media.media_url if "pic" in view_data else media.media_url,
         extra_text=_format_bilibili_stats(view_data),
+        author=_string(owner["name"]) or media.author if owner is not None and "name" in owner else media.author,
+        author_avatar=_string(owner["face"]) if owner is not None and "face" in owner else media.author_avatar,
+        published_at=_format_publish_time(_number(view_data["pubdate"]) if "pubdate" in view_data else None),
     )
     online_text = await _fetch_bilibili_online(view_data, cid, bvid)
     extra_text = " | ".join(value for value in (enriched.extra_text, online_text) if value)
@@ -560,8 +709,10 @@ async def _resolve_bilibili_page(url: str) -> ResolvedMedia:
 
 
 async def _resolve_bilibili_live(url: str, room_id: str) -> ResolvedMedia:
-    async with httpx.AsyncClient(timeout=15, proxy=configured_proxy()) as client:
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": url}
+    async with httpx.AsyncClient(timeout=15, headers=headers, proxy=configured_proxy()) as client:
         response = await client.get(f"https://api.live.bilibili.com/room/v1/Room/get_info?room_id={room_id}")
+    response.raise_for_status()
     payload = _json_object(json.loads(response.text))
     data = _json_object(payload.get("data")) if payload is not None else None
     if data is None:
@@ -805,7 +956,7 @@ async def _resolve_weibo(url: str) -> ResolvedMedia:
         if mid:
             weibo_id = _mid_to_id(mid)
     if weibo_id is None:
-        id_match = re.search(r"/detail/([A-Za-z0-9]+)", parsed.path)
+        id_match = re.search(r"/(?:detail|status)/([A-Za-z0-9]+)", parsed.path)
         if id_match is None:
             id_match = re.search(r"/(\d+)/([A-Za-z0-9]+)", parsed.path)
         if id_match is None:
@@ -814,22 +965,59 @@ async def _resolve_weibo(url: str) -> ResolvedMedia:
             weibo_id = id_match.group(2) if id_match.lastindex == 2 else id_match.group(1)
     if weibo_id is None:
         raise ValueError("微博链接中没有动态 ID")
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True, proxy=configured_proxy()) as client:
-        response = await client.get(f"https://m.weibo.cn/statuses/show?id={weibo_id}")
-    payload = _json_object(json.loads(response.text))
-    data = _json_object(payload.get("data")) if payload is not None else None
+    data: dict[str, object] | None = None
+    api_requests = (
+        ("https://m.weibo.cn/statuses/show", {"id": weibo_id}),
+        ("https://weibo.com/ajax/statuses/show", {"id": weibo_id}),
+    )
+    async with httpx.AsyncClient(
+        timeout=20,
+        follow_redirects=True,
+        headers=_WEIBO_HEADERS,
+        proxy=configured_proxy(),
+    ) as client:
+        for api_url, params in api_requests:
+            response = await client.get(api_url, params=params)
+            if response.status_code >= 400:
+                continue
+            try:
+                payload = _json_object(json.loads(response.text))
+            except json.JSONDecodeError:
+                continue
+            if payload is None:
+                continue
+            nested_data = _json_object(payload["data"]) if "data" in payload else None
+            candidate = nested_data or payload
+            if any(key in candidate for key in ("id", "mid", "text", "user")):
+                data = candidate
+                break
     if data is None:
-        raise ValueError("微博接口没有返回动态信息")
+        raise ValueError("微博主备接口均未返回动态信息")
     title = _string(data.get("status_title")) or "微博动态"
     text = _string(data.get("text")) or ""
-    clean_text = re.sub(r"<[^>]+>", "", text)
+    clean_text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    user = _json_object(data["user"]) if "user" in data else None
+    author = _string(user["screen_name"]) or "" if user is not None and "screen_name" in user else ""
+    author_avatar = _first_string(user, ("avatar_hd", "profile_image_url")) if user is not None else None
+    published_at = _string(data["created_at"]) or "" if "created_at" in data else ""
     page_info = _json_object(data.get("page_info"))
     page_urls = _json_object(page_info.get("urls")) if page_info is not None else None
     video_url = None
     if page_urls is not None:
         video_url = _string(page_urls.get("mp4_720p_mp4")) or _string(page_urls.get("mp4_hd_mp4"))
     if video_url is not None:
-        return await _download_direct_video(video_url, title, "wb")
+        page_pic = _json_object(page_info["page_pic"]) if page_info is not None and "page_pic" in page_info else None
+        thumbnail = _string(page_pic["url"]) if page_pic is not None and "url" in page_pic else None
+        return await _download_direct_video(
+            video_url,
+            title,
+            "wb",
+            source_url=url,
+            author=author,
+            author_avatar=author_avatar,
+            published_at=published_at,
+            thumbnail=thumbnail,
+        )
     raw_pics = data.get("pics")
     image_urls: list[str] = []
     if isinstance(raw_pics, list):
@@ -838,7 +1026,17 @@ async def _resolve_weibo(url: str) -> ResolvedMedia:
             if pic is not None and (pic_url := _string(pic.get("url"))) is not None:
                 image_urls.append(pic_url)
     if image_urls:
-        return ResolvedMedia("wb", title, "image", url, image_urls=tuple(image_urls), description=clean_text)
+        return ResolvedMedia(
+            "wb",
+            title,
+            "image",
+            url,
+            image_urls=tuple(image_urls),
+            description=clean_text,
+            author=author,
+            author_avatar=author_avatar,
+            published_at=published_at,
+        )
     raise ValueError("微博动态没有可发送的图片或视频")
 
 
@@ -871,6 +1069,10 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
                         image_urls=((cover,) if cover else ()) + images,
                         author_sec_uid=_string(author["sec_uid"])
                         if author is not None and "sec_uid" in author
+                        else None,
+                        author=_string(author["nickname"]) or "" if author is not None and "nickname" in author else "",
+                        author_avatar=_url_from_object(author["avatar_thumb"])
+                        if author is not None and "avatar_thumb" in author
                         else None,
                     )
         video_match = re.search(r"/(?:video|note)/(\d+)", final_url)
@@ -921,6 +1123,13 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
             if detail is not None:
                 author = _json_object(detail["author"]) if "author" in detail else None
                 author_sec_uid = _string(author["sec_uid"]) if author is not None and "sec_uid" in author else None
+                author_name = _string(author["nickname"]) or "" if author is not None and "nickname" in author else ""
+                author_avatar = (
+                    _url_from_object(author["avatar_thumb"])
+                    if author is not None and "avatar_thumb" in author
+                    else None
+                )
+                published_at = _format_publish_time(_number(detail["create_time"]) if "create_time" in detail else None)
                 aweme_type = _number(detail.get("aweme_type"))
                 raw_images = detail.get("images")
                 image_urls: list[str] = []
@@ -942,6 +1151,9 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
                             final_url,
                             image_urls=tuple(dict.fromkeys(image_urls)),
                             author_sec_uid=author_sec_uid,
+                            author=author_name,
+                            author_avatar=author_avatar,
+                            published_at=published_at,
                         )
             video = _json_object(detail.get("video")) if detail is not None else None
             play_addr = _json_object(video.get("play_addr")) if video is not None else None
@@ -949,12 +1161,17 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
             if video_uri:
                 player_url = f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_uri}&ratio=1080p&line=0"
                 title = _string(detail.get("desc")) if detail is not None else None
+                cover = _url_from_object(video["cover"]) if video is not None and "cover" in video else None
                 return await _download_direct_video(
                     player_url,
                     title or "抖音视频",
                     "dy",
                     source_url=final_url,
                     author_sec_uid=author_sec_uid,
+                    author=author_name,
+                    author_avatar=author_avatar,
+                    published_at=published_at,
+                    thumbnail=cover,
                 )
     return await resolve_video(final_url, "dy")
 
@@ -995,7 +1212,7 @@ async def _resolve_xiaohongshu(url: str, cookie: str) -> ResolvedMedia:
     if note_match is None or state_match is None:
         raise ValueError("小红书页面未返回有效笔记数据，请检查 Cookie")
     note_id = note_match.group(1)
-    state = _json_object(json.loads(state_match.group(1).replace("undefined", "null").rstrip(";")))
+    state = _json_object(json.loads(_normalize_javascript_state(state_match.group(1).rstrip(";"))))
     state_note = state["note"] if state is not None and "note" in state else None
     state_note_data = _json_object(state_note)
     note_map = (
@@ -1008,17 +1225,36 @@ async def _resolve_xiaohongshu(url: str, cookie: str) -> ResolvedMedia:
     if note is None:
         raise ValueError("小红书笔记数据为空，请检查 Cookie 是否有效")
     title = _string(note.get("title")) or "小红书笔记"
+    user = _json_object(note["user"]) if "user" in note else None
+    author = _first_string(user, ("nickname", "nickName", "name")) or "" if user is not None else ""
+    author_avatar = _first_string(user, ("avatar", "image")) if user is not None else None
+    published_at = _format_publish_time(
+        _number(note["time"])
+        if "time" in note
+        else (_number(note["lastUpdateTime"]) if "lastUpdateTime" in note else None)
+    )
     note_type = _string(note.get("type"))
     if note_type == "video":
         video_data = _json_object(note.get("video"))
         media = _json_object(video_data.get("media")) if video_data is not None else None
         streams = _json_object(media.get("stream")) if media is not None else None
-        h264 = streams.get("h264") if streams is not None else None
-        first_stream = _json_object(h264[0]) if isinstance(h264, list) and h264 else None
-        video_url = _string(first_stream.get("masterUrl")) if first_stream is not None else None
+        video_url = _select_xiaohongshu_video_url(streams)
         if video_url is None:
             raise ValueError("小红书视频地址为空")
-        return await _download_direct_video(video_url, title)
+        image_list = note["imageList"] if "imageList" in note else None
+        first_image = _json_object(image_list[0]) if isinstance(image_list, list) and image_list else None
+        thumbnail = (
+            _string(first_image["urlDefault"]) if first_image is not None and "urlDefault" in first_image else None
+        )
+        return await _download_direct_video(
+            video_url,
+            title,
+            source_url=url,
+            author=author,
+            author_avatar=author_avatar,
+            published_at=published_at,
+            thumbnail=thumbnail,
+        )
     image_list = note.get("imageList")
     if not isinstance(image_list, list):
         raise ValueError("小红书笔记未找到图片")
@@ -1032,7 +1268,95 @@ async def _resolve_xiaohongshu(url: str, cookie: str) -> ResolvedMedia:
     if not images:
         raise ValueError("小红书笔记未找到图片")
     description = _string(note["desc"]) if "desc" in note else ""
-    return ResolvedMedia("xiaohongshu", title, "image", url, image_urls=images, description=description or "")
+    return ResolvedMedia(
+        "xiaohongshu",
+        title,
+        "image",
+        url,
+        image_urls=images,
+        description=description or "",
+        author=author,
+        author_avatar=author_avatar,
+        published_at=published_at,
+    )
+
+
+def _select_xiaohongshu_video_url(streams: dict[str, object] | None) -> str | None:
+    if streams is None:
+        return None
+    candidates: list[tuple[int, int, str]] = []
+    for family, raw_streams in streams.items():
+        if not isinstance(raw_streams, list):
+            continue
+        for raw_stream in raw_streams:
+            stream = _json_object(raw_stream)
+            if stream is None:
+                continue
+            master_url = _string(stream["masterUrl"]) if "masterUrl" in stream else None
+            backup_urls = stream["backupUrls"] if "backupUrls" in stream else None
+            backup_url = (
+                next((url for url in backup_urls if isinstance(url, str) and url), None)
+                if isinstance(backup_urls, list)
+                else None
+            )
+            video_url = master_url or backup_url
+            if video_url is None:
+                continue
+            codec = (_first_string(stream, ("videoCodec", "codec", "format")) or "").lower()
+            family_name = family.lower()
+            is_h264 = family_name in {"ef4", "h264", "avc"} or codec in {"ef4", "h264", "avc", "avc1"}
+            height = _number(stream["height"]) if "height" in stream else None
+            width = _number(stream["width"]) if "width" in stream else None
+            short_edge = min(height, width) if height is not None and width is not None else height
+            if short_edge is None:
+                height_rank = 20000
+            elif short_edge <= 720:
+                height_rank = 720 - short_edge
+            else:
+                height_rank = 10000 + short_edge
+            candidates.append((0 if is_h264 else 1, height_rank, video_url))
+    return min(candidates)[2] if candidates else None
+
+
+def _normalize_javascript_state(source: str) -> str:
+    output: list[str] = []
+    index = 0
+    quote_character = ""
+    escaped = False
+    empty_collection = re.compile(r"new\s+(Map|Set)\s*\(\s*\[\s*\]\s*\)")
+    while index < len(source):
+        character = source[index]
+        if quote_character:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote_character:
+                quote_character = ""
+            index += 1
+            continue
+        if character in {'"', "'"}:
+            quote_character = character
+            output.append(character)
+            index += 1
+            continue
+        collection_match = empty_collection.match(source, index)
+        if collection_match is not None:
+            output.append("{}" if collection_match.group(1) == "Map" else "[]")
+            index = collection_match.end()
+            continue
+        if source.startswith("undefined", index):
+            previous = source[index - 1] if index else ""
+            next_index = index + len("undefined")
+            following = source[next_index] if next_index < len(source) else ""
+            if not (previous.isalnum() or previous in "_$" or following.isalnum() or following in "_$"):
+                output.append("null")
+                index = next_index
+                continue
+        output.append(character)
+        index += 1
+    return "".join(output)
 
 
 async def _download_direct_video(
@@ -1041,6 +1365,10 @@ async def _download_direct_video(
     platform: str = "xiaohongshu",
     source_url: str | None = None,
     author_sec_uid: str | None = None,
+    author: str = "",
+    author_avatar: str | None = None,
+    published_at: str = "",
+    thumbnail: str | None = None,
 ) -> ResolvedMedia:
     path = DOWNLOAD_PATH / f"direct_{int(time.time() * 1000000)}.mp4"
     async with httpx.AsyncClient(timeout=90, follow_redirects=True, proxy=configured_proxy()) as client:
@@ -1054,8 +1382,12 @@ async def _download_direct_video(
         title,
         "video",
         source_url or url,
+        media_url=thumbnail,
         media_path=path,
         author_sec_uid=author_sec_uid,
+        author=author,
+        author_avatar=author_avatar,
+        published_at=published_at,
     )
 
 
@@ -1362,7 +1694,86 @@ def reload_comment_templates() -> None:
     load_comment_template("bilibili", force_reload=True)
 
 
-async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment]) -> bytes:
+async def render_media_card(media: ResolvedMedia, nickname: str, platform_label: str) -> bytes:
+    preview_urls: tuple[str, ...]
+    if media.kind == "video" and media.media_url is not None:
+        preview_urls = (media.media_url,)
+    elif media.kind in {"image", "audio"}:
+        preview_urls = media.image_urls[:3]
+    else:
+        preview_urls = ()
+    asset_urls = tuple(dict.fromkeys(url for url in (media.author_avatar, *preview_urls) if url is not None))
+    asset_results = await asyncio.gather(*(_inline_asset(url) for url in asset_urls))
+    assets = {url: result for url, result in zip(asset_urls, asset_results) if result is not None}
+
+    author = media.author or nickname or platform_label
+    avatar_data = (
+        assets[media.author_avatar] if media.author_avatar is not None and media.author_avatar in assets else None
+    )
+    avatar = (
+        f'<img class="avatar" src="{html.escape(avatar_data, quote=True)}" />'
+        if avatar_data is not None
+        else f'<div class="avatar-fallback">{html.escape(author[:1])}</div>'
+    )
+    preview_images = "".join(
+        f'<img src="{html.escape(assets[url], quote=True)}" />' for url in preview_urls if url in assets
+    )
+    preview_count = sum(1 for url in preview_urls if url in assets)
+    preview = ""
+    if preview_images:
+        video_class = " video" if media.kind == "video" else ""
+        play = '<span class="play"></span>' if media.kind == "video" else ""
+        preview = f'<div class="preview count-{preview_count}{video_class}">{preview_images}{play}</div>'
+
+    description_text = media.description.strip()
+    description = (
+        f'<div class="description">{html.escape(description_text).replace(chr(10), "<br>")}</div>'
+        if description_text not in {"", "-", "--"} and description_text != media.title.strip()
+        else ""
+    )
+    extra_text = media.extra_text.strip()
+    extra = f'<div class="extra">{html.escape(extra_text)}</div>' if extra_text else ""
+    card_classes = {
+        "bilibili": "platform-bilibili",
+        "dy": "platform-dy",
+        "xiaohongshu": "platform-xiaohongshu",
+        "wb": "platform-wb",
+        "ac": "platform-ac",
+    }
+    platform_class = card_classes[media.platform] if media.platform in card_classes else ""
+    platform_logo = "bilibili" if media.platform == "bilibili" else platform_label
+    template = (Path(__file__).resolve().parent / "templates" / "media-card.html").read_text(encoding="utf-8")
+    document = (
+        template.replace("{{platform_class}}", platform_class)
+        .replace("{{platform_logo}}", html.escape(platform_logo))
+        .replace("{{avatar}}", avatar)
+        .replace("{{author}}", html.escape(author))
+        .replace("{{published_at}}", html.escape(media.published_at))
+        .replace("{{title}}", html.escape(media.title))
+        .replace("{{preview}}", preview)
+        .replace("{{description}}", description)
+        .replace("{{extra_text}}", extra)
+    )
+    return await render_html_to_bytes(document, max_width=800, image_format="png", lang="zh")
+
+
+async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment]) -> tuple[bytes, ...]:
+    pages = [comments[index : index + _COMMENT_PAGE_SIZE] for index in range(0, len(comments), _COMMENT_PAGE_SIZE)]
+    return tuple(
+        [
+            await _render_comment_page(media, page, len(comments), page_index + 1, len(pages))
+            for page_index, page in enumerate(pages)
+        ]
+    )
+
+
+async def _render_comment_page(
+    media: ResolvedMedia,
+    comments: list[ResolvedComment],
+    total_comments: int,
+    page_number: int,
+    page_count: int,
+) -> bytes:
     asset_urls: set[str] = set()
 
     def collect_assets(comment: ResolvedComment) -> None:
@@ -1399,7 +1810,9 @@ async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment])
         reply_images = "".join(image_tag("comment-image", image) for image in reply.images)
         badge = ' <span class="author-badge">UP</span>' if reply.is_author else ""
         reply_sticker = image_tag("comment-sticker", reply.sticker)
-        reply_emojis = "".join(image_tag("comment-emoji", emoji) for emoji in reply.emojis)
+        reply_emojis = (
+            "" if media.platform == "bilibili" else "".join(image_tag("comment-emoji", emoji) for emoji in reply.emojis)
+        )
         reply_media = reply_images + reply_sticker + reply_emojis
         return (
             '<div class="reply-item">'
@@ -1428,13 +1841,13 @@ async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment])
         badge = ' <span class="author-badge">UP</span>' if comment.is_author else ""
         meta = "　".join(value for value in (comment.time, comment.location) if value)
         item_parts.append(
-            "<article>"
+            '<article class="comment-item">'
             f"{image_tag('avatar', comment.avatar)}"
-            '<section><div class="username">'
+            '<section class="comment-body"><div class="username">'
             f"{html.escape(comment.username)}{badge}"
-            f"</div><p>{text_html(comment)}</p>"
-            f'<div class="media">{images}{sticker}{emojis}</div>'
-            f"<small>{html.escape(meta)}　♥ {comment.like}</small>"
+            f'</div><div class="comment-text">{text_html(comment)}</div>'
+            f'<div class="comment-images">{images}{sticker}{emojis}</div>'
+            f'<div class="comment-footer">{html.escape(meta)}　♥ {comment.like}</div>'
             f"{replies_html}</section></article>"
         )
     items = "".join(item_parts)
@@ -1443,9 +1856,9 @@ async def render_comments(media: ResolvedMedia, comments: list[ResolvedComment])
     document = (
         template.replace("{{theme_class}}", theme_class)
         .replace("{{title}}", html.escape(media.title))
-        .replace("{{total_comments}}", str(len(comments)))
+        .replace("{{total_comments}}", str(total_comments))
         .replace("{{comments}}", items)
-        .replace("{{page_indicator}}", "")
+        .replace("{{page_indicator}}", f" · {page_number}/{page_count}" if page_count > 1 else "")
     )
     return await render_html_to_bytes(document, max_width=780, image_format="png", lang="zh")
 

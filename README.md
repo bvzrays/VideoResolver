@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./ICON.png" alt="VideoResolver Logo" width="220">
+</p>
+
 # VideoResolver
 
 面向 GsCore / 早柚核心的链接分享解析插件，项目地址：[bvzrays/VideoResolver](https://github.com/bvzrays/VideoResolver)，移植自
@@ -54,6 +58,7 @@ Windows 请安装 FFmpeg，并确认在 PowerShell 中执行 `ffmpeg -version` �
 | 海外服务器 | 关闭 | 开启后不为海外平台使用配置的代理 |
 | 视频最大时长 | `480` | 下载视频的最大秒数 |
 | 全局禁用平台 | 空 | 逗号分隔的平台代号 |
+| 各平台开关 | 国内开启、海外关闭 | B站、抖音、AcFun、微博、小红书、网易云和酷狗默认开启；TikTok、X 和 YouTube 默认关闭 |
 | B站 SESSDATA | 空 | B站登录态、评论和需要登录的接口 |
 | 抖音 Cookie | 空 | 抖音接口登录态 |
 | 小红书 Cookie | 空 | 小红书笔记登录态 |
@@ -64,10 +69,12 @@ Windows 请安装 FFmpeg，并确认在 PowerShell 中执行 `ffmpeg -version` �
 
 Cookie 和 Cookie 文件只保存在 GsCore 的 `data/VideoResolver/` 运行目录，不要提交到 Git。
 
+解析结果会先发送平台信息卡，展示作者、发布时间、标题和封面或图集预览，再发送实际媒体。
+
 评论图片模板也位于 `data/VideoResolver/templates/`：`douyin-comment.html` 用于抖音，
 `bilibili-comment.html` 用于 B 站。可以复制并修改模板中的 HTML/CSS，保留
-`{{theme_class}}`、`{{title}}`、`{{total_comments}}` 和 `{{comments}}` 占位符；如模板使用分页，
-还可以保留可选的 `{{page_indicator}}` 占位符，
+`{{theme_class}}`、`{{title}}`、`{{total_comments}}`、`{{comments}}` 和 `{{page_indicator}}` 占位符。
+图片模式每页最多渲染 5 条评论，并将所有分页图片放入一条合并转发消息，
 然后发送 `vr重载评论模板` 应用修改；模板缺失或损坏时会自动恢复内置版本。
 
 ## 说明

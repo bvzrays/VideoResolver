@@ -29,8 +29,7 @@
         .comment-body { flex: 1; min-width: 0; }
         .username, .reply-username { display: inline-flex; align-items: center; gap: 6px; color: var(--username-color); font-weight: bold; }
         .username.is-up, .reply-username.is-up { color: #ff6699; }
-        .level-badge, .up-badge { color: #fff; font-size: 9px; font-weight: bold; padding: 1px 4px; border-radius: 3px; }
-        .up-badge { border: 1px solid #ff6699; color: #ff6699; }
+        .author-badge { border: 1px solid #ff6699; color: #ff6699; font-size: 10px; font-weight: bold; padding: 1px 4px; border-radius: 3px; }
         .comment-text { margin-bottom: 8px; color: var(--text-color); font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
         .comment-mention { color: #ff6699; font-weight: 600; }
         .comment-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
@@ -45,6 +44,7 @@
         .reply-avatar { width: 24px; height: 24px; flex: 0 0 24px; border-radius: 50%; margin-right: 10px; object-fit: cover; }
         .reply-body { flex: 1; min-width: 0; }
         .reply-text { color: var(--text-color); font-size: 13.5px; line-height: 1.5; overflow-wrap: anywhere; }
+        .reply-media { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
         .reply-footer { display: flex; gap: 12px; margin-top: 4px; color: var(--meta-color); font-size: 11px; }
     </style>
 </head>
@@ -52,7 +52,7 @@
     <div class="container">
         <div class="header">
             <span>💬 《{{title}}》热门评论</span>
-            <span style="font-size: 14px; color: var(--meta-color);">共 {{total_comments}} 条</span>
+            <span style="font-size: 14px; color: var(--meta-color);">共 {{total_comments}} 条{{page_indicator}}</span>
         </div>
         <div class="comments-list">{{comments}}</div>
     </div>

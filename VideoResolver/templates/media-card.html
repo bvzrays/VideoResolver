@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 24px; width: 800px; background: #fff; color: #303133; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+        .card { width: 752px; overflow: hidden; background: #fff; }
+        .header { display: flex; align-items: center; min-height: 76px; }
+        .avatar, .avatar-fallback { width: 58px; height: 58px; flex: 0 0 58px; border-radius: 50%; object-fit: cover; }
+        .avatar-fallback { display: flex; align-items: center; justify-content: center; background: #eef2f7; color: #75808f; font-size: 24px; font-weight: 600; }
+        .identity { min-width: 0; margin-left: 14px; }
+        .author { overflow: hidden; color: #087cff; font-size: 24px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+        .published { margin-top: 6px; color: #92969c; font-size: 19px; }
+        .published:empty { display: none; }
+        .platform { margin-left: auto; padding-left: 18px; font-size: 23px; font-weight: 700; white-space: nowrap; }
+        .platform-bilibili .platform { color: #00aeec; font-style: italic; }
+        .platform-dy .platform { color: #111; }
+        .platform-xiaohongshu .platform { color: #ff2442; }
+        .platform-wb .platform { color: #e6162d; }
+        .platform-ac .platform { color: #fd4c5b; }
+        .title { margin: 12px 0 16px; color: #34373c; font-size: 24px; line-height: 1.35; overflow-wrap: anywhere; }
+        .platform-bilibili .title { color: #6f42b5; }
+        .preview { position: relative; display: grid; width: 100%; gap: 8px; overflow: hidden; }
+        .preview.count-1 { grid-template-columns: 1fr; }
+        .preview.count-2 { grid-template-columns: repeat(2, 1fr); }
+        .preview.count-3 { grid-template-columns: repeat(3, 1fr); }
+        .preview img { display: block; width: 100%; height: 260px; border-radius: 3px; object-fit: cover; }
+        .preview.count-1 img { height: 420px; object-fit: contain; background: #f5f6f7; }
+        .preview.video img { object-fit: cover; }
+        .play { position: absolute; top: 50%; left: 50%; width: 0; height: 0; border-top: 28px solid transparent; border-bottom: 28px solid transparent; border-left: 44px solid rgba(255, 255, 255, 0.78); filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.32)); transform: translate(-42%, -50%); }
+        .description { margin-top: 14px; color: #3f4247; font-size: 21px; line-height: 1.4; overflow-wrap: anywhere; white-space: pre-wrap; }
+        .extra { margin-top: 14px; color: #92969c; font-size: 18px; line-height: 1.45; overflow-wrap: anywhere; }
+    </style>
+</head>
+<body>
+    <main class="card {{platform_class}}">
+        <header class="header">
+            {{avatar}}
+            <div class="identity">
+                <div class="author">{{author}}</div>
+                <div class="published">{{published_at}}</div>
+            </div>
+            <div class="platform">{{platform_logo}}</div>
+        </header>
+        <div class="title">{{title}}</div>
+        {{preview}}
+        {{description}}
+        {{extra_text}}
+    </main>
+</body>
+</html>

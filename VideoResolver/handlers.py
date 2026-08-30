@@ -120,6 +120,14 @@ async def _remove_path(path: Path) -> None:
     await asyncio.to_thread(path.unlink, missing_ok=True)
 
 
+async def _send_video(bot: Bot, ev: Event, path: Path) -> None:
+    file_size = (await asyncio.to_thread(path.stat)).st_size
+    if ev.bot_id.casefold() == "onebot" or file_size > 100 * 1024 * 1024:
+        await bot.send(MessageSegment.file(path, path.name))
+    else:
+        await bot.send(MessageSegment.video(path))
+
+
 async def _send_media(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
     nickname = _nickname()
     prefix = f"{nickname} " if nickname else ""
@@ -137,11 +145,7 @@ async def _send_media(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
             await bot.send(details)
     if media.kind == "video" and media.media_path is not None:
         try:
-            file_size = (await asyncio.to_thread(media.media_path.stat)).st_size
-            if file_size > 100 * 1024 * 1024:
-                await bot.send(MessageSegment.file(media.media_path, media.media_path.name))
-            else:
-                await bot.send(MessageSegment.video(media.media_path))
+            await _send_video(bot, ev, media.media_path)
         finally:
             await _remove_path(media.media_path)
     elif media.kind == "image":

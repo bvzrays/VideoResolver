@@ -1922,7 +1922,7 @@ async def render_media_card(media: ResolvedMedia, nickname: str, platform_label:
     else:
         preview_urls = ()
     asset_urls = tuple(dict.fromkeys(url for url in (media.author_avatar, *preview_urls) if url is not None))
-    asset_results = await asyncio.gather(*(_inline_asset(url) for url in asset_urls))
+    asset_results = await asyncio.gather(*(_inline_asset(url, media.source_url) for url in asset_urls))
     assets = {url: result for url, result in zip(asset_urls, asset_results) if result is not None}
 
     author = media.author or nickname or platform_label
@@ -2004,7 +2004,7 @@ async def _render_comment_page(
     for comment in comments:
         collect_assets(comment)
     sorted_assets = sorted(asset_urls)
-    asset_results = await asyncio.gather(*(_inline_asset(url) for url in sorted_assets))
+    asset_results = await asyncio.gather(*(_inline_asset(url, media.source_url) for url in sorted_assets))
     assets = {url: result for url, result in zip(sorted_assets, asset_results) if result is not None}
 
     def image_tag(class_name: str, url: str | None) -> str:
@@ -2082,9 +2082,25 @@ async def _render_comment_page(
     return await render_html_to_bytes(document, max_width=780, image_format="png", lang="zh")
 
 
-async def _inline_asset(url: str) -> str | None:
+def _asset_headers(url: str, referer: str | None) -> dict[str, str]:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    host = urlparse(url).netloc.lower()
+    if host.endswith("bilibili.com") or host.endswith("hdslb.com"):
+        headers["Referer"] = referer or "https://www.bilibili.com/"
+    elif referer is not None and referer.startswith(("http://", "https://")):
+        headers["Referer"] = referer
+    return headers
+
+
+async def _inline_asset(url: str, referer: str | None = None) -> str | None:
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True, proxy=configured_proxy()) as client:
+        headers = _asset_headers(url, referer)
+        async with httpx.AsyncClient(
+            timeout=15,
+            follow_redirects=True,
+            headers=headers,
+            proxy=configured_proxy(),
+        ) as client:
             response = await client.get(url)
     except (httpx.HTTPError, OSError) as error:
         logger.debug("VideoResolver 评论资源下载失败：%s", error)

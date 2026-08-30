@@ -1,6 +1,6 @@
 name: VideoResolver
 display_name: VideoResolver
-version: 1.2.34
+version: 1.2.35
 author: zhiyu1998 / GsCore port
 description: GsCore 链接分享视频、图片和音乐解析插件，支持哔哩哔哩、抖音、TikTok、YouTube 等平台。
 repo: https://github.com/bvzrays/VideoResolver

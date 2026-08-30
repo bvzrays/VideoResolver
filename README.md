@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/bvzrays/VideoResolver"><img src="./ICON.png" width="256" height="256" alt="VideoResolver"></a>
 </p>
-<h1 align="center">VideoResolver 1.2.34</h1>
+<h1 align="center">VideoResolver 1.2.35</h1>
 <h4 align="center">🎬 面向 GsCore / 早柚核心的视频、图文与音乐分享解析插件 🎬</h4>
 <div align="center">
   <a href="https://docs.sayu-bot.com/" target="_blank">GsCore 文档</a> &nbsp; · &nbsp;

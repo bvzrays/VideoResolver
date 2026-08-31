@@ -120,12 +120,16 @@ async def _remove_path(path: Path) -> None:
     await asyncio.to_thread(path.unlink, missing_ok=True)
 
 
-async def _send_video(bot: Bot, ev: Event, path: Path) -> None:
+async def _send_video(bot: Bot, path: Path) -> None:
     file_size = (await asyncio.to_thread(path.stat)).st_size
-    if ev.bot_id.casefold() == "onebot" or file_size > 100 * 1024 * 1024:
+    if file_size > 100 * 1024 * 1024:
         await bot.send(MessageSegment.file(path, path.name))
-    else:
+        return
+    try:
         await bot.send(MessageSegment.video(path))
+    except Exception as error:
+        logger.debug(f"VideoResolver 视频发送失败，回退文件：{error}")
+        await bot.send(MessageSegment.file(path, path.name))
 
 
 async def _send_media(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
@@ -145,7 +149,7 @@ async def _send_media(bot: Bot, ev: Event, media: ResolvedMedia) -> None:
             await bot.send(details)
     if media.kind == "video" and media.media_path is not None:
         try:
-            await _send_video(bot, ev, media.media_path)
+            await _send_video(bot, media.media_path)
         finally:
             await _remove_path(media.media_path)
     elif media.kind == "image":

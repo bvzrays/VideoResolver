@@ -132,11 +132,21 @@ def configured_proxy() -> str | None:
 
 
 def extract_url(raw_text: str) -> str | None:
-    normalized = raw_text.replace("\\/", "/").replace("\\u002F", "/").replace("&amp;", "&")
+    normalized = (
+        raw_text.replace("\\/", "/")
+        .replace("\\u002F", "/")
+        .replace("\\u002f", "/")
+        .replace("\\u0026", "&")
+        .replace("\\u003F", "?")
+        .replace("\\u003f", "?")
+        .replace("\\u003D", "=")
+        .replace("\\u003d", "=")
+        .replace("&amp;", "&")
+    )
     match = re.search(r"https?://[^\s<>，。！？；：、（）【】《》“”‘’]+", normalized)
     if match is None:
         return None
-    return match.group(0).rstrip("，。！？；,.;!?)】》").rstrip("\"'")
+    return match.group(0).rstrip("，。！？；,.;!?)】》\"'}]")
 
 
 def platform_from_url(url: str) -> str | None:

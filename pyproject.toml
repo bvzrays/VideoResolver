@@ -1,6 +1,6 @@
 [project]
 name = "VideoResolver"
-version = "1.2.36"
+version = "1.2.37"
 description = "GsCore 链接分享视频、图片和音乐解析插件"
 requires-python = ">=3.11,<4.0"
 readme = "README.md"

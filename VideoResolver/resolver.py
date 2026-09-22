@@ -186,6 +186,29 @@ def _json_object(value: object) -> dict[str, object] | None:
     return None
 
 
+def _json_response_object(response: httpx.Response, endpoint: str) -> dict[str, object] | None:
+    if response.status_code >= 400:
+        logger.debug("VideoResolver %s 返回 HTTP %s", endpoint, response.status_code)
+        return None
+    body = response.text.strip()
+    if not body:
+        logger.debug("VideoResolver %s 返回空响应", endpoint)
+        return None
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        content_type = response.headers.get("content-type", "")
+        logger.debug(
+            "VideoResolver %s 返回非 JSON 响应：%s，content-type=%s，body=%s",
+            endpoint,
+            exc,
+            content_type,
+            body[:120],
+        )
+        return None
+    return _json_object(payload)
+
+
 def _string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
@@ -1116,7 +1139,7 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
         final_url = str(resolved.url)
         if "share/slides" in final_url:
             fallback = await client.get("https://api.xingzhige.com/API/douyin/", params={"url": url})
-            payload = _json_object(json.loads(fallback.text))
+            payload = _json_response_object(fallback, "抖音图集备用接口")
             data = _json_object(payload.get("data")) if payload is not None else None
             jump = _json_object(data.get("jx")) if data is not None else None
             if jump is not None and _string(jump.get("type")) == "图集":
@@ -1193,7 +1216,7 @@ async def _resolve_douyin(url: str) -> ResolvedMedia:
                 signed_url,
                 headers={"User-Agent": user_agent, "Referer": final_url, "Cookie": cookie},
             )
-            payload = _json_object(json.loads(response.text))
+            payload = _json_response_object(response, "抖音详情接口")
             detail = _json_object(payload.get("aweme_detail")) if payload is not None else None
             if detail is not None:
                 author = _json_object(detail["author"]) if "author" in detail else None
@@ -1797,7 +1820,7 @@ async def fetch_douyin_comments(media: ResolvedMedia) -> list[ResolvedComment]:
     async with httpx.AsyncClient(timeout=20, headers=headers, proxy=configured_proxy()) as client:
         response = await client.get(signed_url)
     response.raise_for_status()
-    payload = _json_object(json.loads(response.text))
+    payload = _json_response_object(response, "抖音评论接口")
     raw_comments = payload["comments"] if payload is not None and "comments" in payload else None
     if not isinstance(raw_comments, list):
         return []
